@@ -1,0 +1,20 @@
+{
+    "flickr30k": {
+	"root": "./data/flickr30k",
+	"ann_path": "./data/flickr30k/flickr30k_entities/Annotations",
+	"sen_path": "./data/flickr30k/flickr30k_entities/Sentences",
+	"trn_img_ids": "./data/flickr30k/flickr30k_entities/train.txt",
+	"val_img_ids": "./data/flickr30k/flickr30k_entities/val.txt",
+	"test_img_ids": "./data/flickr30k/flickr30k_entities/test.txt"
+    },
+    "refclef": {
+	"root": "./data/referit"
+    },
+    "flickr_unseen_words": {
+	"root": "./data/flickr30k/flickr_unseen_words"
+    },
+    "vg_split": {
+	"data_dir": "/scratch/arka/Ark_git_files/visual_genome/vg_split",
+	"img_dir": "/scratch/arka/Ark_git_files/visual_genome"
+    }
+}
