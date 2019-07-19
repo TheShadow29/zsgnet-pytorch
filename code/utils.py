@@ -17,6 +17,9 @@ import json
 from fastprogress.fastprogress import master_bar, progress_bar
 import logging
 import pickle
+from torch.utils.tensorboard import SummaryWriter
+
+
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
                     datefmt='%m/%d/%Y %H:%M:%S',
                     level=logging.INFO)
@@ -130,6 +133,9 @@ class Learner:
         self.log_file = Path(self.data.path) / 'logs' / f'{self.uid}.txt'
 
         self.tb_log_dir = Path(self.data.path) / 'tb_logs' / f'{self.uid}'
+        self.tb_log_dir.mkdir(exist_ok=True, parents=True)
+
+        self.writer = SummaryWriter(log_dir=self.tb_log_dir)
 
         self.extra_log_dir = Path(self.data.path) / \
             'extra_logs' / f'{self.uid}'
@@ -152,6 +158,9 @@ class Learner:
             self.load_model_dict(
                 resume_path=self.cfg['resume_path'],
                 load_opt=self.cfg['load_opt'])
+
+        self.writer.add_text(tag='cfg', text_string=json.dumps(self.cfg),
+                             global_step=self.num_epoch)
 
     def prepare_log_keys(self, keys_list: List[List[str]],
                          prefix: List[str]) -> List[str]:
@@ -289,6 +298,11 @@ class Learner:
             metric = self.eval_fn(out, batch)
             trn_loss.add_value(out_loss)
             trn_acc.add_value(metric)
+
+            self.writer.add_scalar(
+                tag='trn_loss', scalar_value=out_loss[self.loss_keys[0]],
+                global_step=self.num_it)
+
             mb.child.comment = (
                 f'LossB {loss: .4f} | SmLossB {trn_loss.smooth1: .4f} | AccB {trn_acc.smooth1: .4f}')
             del out_loss
@@ -434,7 +448,9 @@ class Learner:
                 # Display on terminal
                 mb.write([str(stat) if isinstance(stat, int)
                           else f'{stat:.4f}' for stat in to_write], table=True)
-
+                for k, record in zip(self.log_keys, to_write):
+                    self.writer.add_scalar(
+                        tag=k, scalar_value=record, global_step=self.num_epoch)
                 # Update in the log file
                 self.update_log_file(
                     good_format_stats(self.log_keys, to_write))
