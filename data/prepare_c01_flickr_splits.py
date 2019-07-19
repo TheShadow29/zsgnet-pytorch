@@ -121,7 +121,7 @@ class FlickrUnseenWordsCSVPrepare(BaseCSVPrepare):
         all_ids = set(list(flickr_df.img_id))
         trn_val_ids = list(all_ids - set(test_ids))
 
-        to_include_prob = 0.7
+        to_include_prob = 0.8
         num_to_incl = int(to_include_prob * len(trn_val_ids))
 
         id_list = np.random.permutation(len(trn_val_ids))
@@ -149,16 +149,14 @@ class FlickrUnseenWordsCSVPrepare(BaseCSVPrepare):
         trn_ids, val_ids, test_ids, output_annot = self.get_trn_val_test_ids(
             output_annot)
         output_annot = output_annot[['img_id', 'bbox', 'query']]
-        # trn_df = self.get_df_from_ids(
-        #     trn_ids, output_annot, split_type='train')
-        # trn_df.to_csv(self.csv_root / 'train.csv', index=False, header=True)
+        trn_df = self.get_df_from_ids(
+            trn_ids, output_annot, split_type='train')
+        trn_df.to_csv(self.csv_root / 'train.csv', index=False, header=True)
 
-        # val_df = self.get_df_from_ids(val_ids, output_annot)
-        # val_df.to_csv(self.csv_root / 'val.csv', index=False, header=True)
+        val_df = self.get_df_from_ids(val_ids, output_annot)
+        val_df.to_csv(self.csv_root / 'val.csv', index=False, header=True)
 
         if test_ids is not None:
-            import pdb
-            pdb.set_trace()
             test_df = self.get_df_from_ids(test_ids, output_annot)
             test_df.to_csv(self.csv_root / 'test.csv',
                            index=False, header=True)
