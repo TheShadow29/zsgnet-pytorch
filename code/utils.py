@@ -111,20 +111,20 @@ class Learner:
 
         self.loss_keys = self.loss_fn.loss_keys
         self.met_keys = self.eval_fn.met_keys
-        self.log_keys = ['epochs']
 
-        for k in self.loss_keys:
-            self.log_keys += [f'trn_{k}', f'val_{k}']
-        for k in self.met_keys:
-            self.log_keys += [f'trn_{k}', f'val_{k}']
-
-        if self.cfg['test_at_runtime']:
-            acc_met_key = self.met_keys[0]
-            if isinstance(self.data.test_dl, list):
-                for i in range(len(self.data.test_dl)):
-                    self.log_keys += [f'test{i+1}_{acc_met_key}']
-            else:
-                self.log_keys += [f'test_{acc_met_key}']
+        # When writing Training and Validation together
+        self.log_keys = ['epochs'] + self.prepare_log_keys(
+            [self.loss_keys, self.met_keys],
+            ['trn', 'val']
+        )
+        # One shouldn't test at runtime
+        # if self.cfg['test_at_runtime']:
+        #     acc_met_key = self.met_keys[0]
+        #     if isinstance(self.data.test_dl, list):
+        #         for i in range(len(self.data.test_dl)):
+        #             self.log_keys += [f'test{i+1}_{acc_met_key}']
+        #     else:
+        #         self.log_keys += [f'test_{acc_met_key}']
 
         self.log_file = Path(self.data.path) / 'logs' / f'{self.uid}.txt'
         self.log_dir = self.log_file.parent / f'{self.uid}'
@@ -134,13 +134,30 @@ class Learner:
 
         self.prepare_log_file()
 
-        # Set the number of iterations to 0. Updated in loading if required
+        # Set the number of iterations, epochs, best_met to 0.
+        # Updated in loading if required
         self.num_it = 0
+        self.num_epoch = 0
+        self.best_met = 0
 
+        # Resume if given a path
         if self.cfg['resume']:
             self.load_model_dict(
-                resume_path=self.cfg['resume_path'], load_opt=self.cfg['load_opt'])
-        self.best_met = 0
+                resume_path=self.cfg['resume_path'],
+                load_opt=self.cfg['load_opt'])
+
+    def prepare_log_keys(self, keys_list: List[List[str]],
+                         prefix: List[str]) -> List[str]:
+        """
+        Convenience function to create log keys
+        keys_list: List[loss_keys, met_keys]
+        prefix: List['trn', 'val']
+        """
+        log_keys = []
+        for keys in keys_list:
+            for key in keys:
+                log_keys += [f'{p}_{key}' for p in prefix]
+        return log_keys
 
     def prepare_log_file(self):
         "Prepares the log files depending on arguments"
@@ -285,32 +302,54 @@ class Learner:
         if 'num_it' in checkpoint.keys():
             self.num_it = checkpoint['num_it']
 
+        if 'num_epoch' in checkpoint.keys():
+            self.num_epoch = checkpoint['num_epoch']
+
+        if 'best_met' in checkpoint.keys():
+            self.best_met = checkpoint['best_met']
+
         if load_opt:
+            self.optimizer = self.prepare_optimizer()
             self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            if 'scheduler_state_dict' in checkpoint:
+                self.lr_scheduler = self.prepare_scheduler()
+                self.lr_scheduler.load_state_dict(
+                    checkpoint['scheduler_state_dict'])
 
     def save_model_dict(self):
         "Save the model and optimizer"
-        checkpoint = {'model_state_dict': self.mdl.state_dict(),
-                      'optimizer_state_dict': self.optimizer.state_dict(),
-                      'num_it': self.num_it}
+        checkpoint = {
+            'model_state_dict': self.mdl.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'scheduler_state_dict': self.lr_scheduler.state_dict(),
+            'num_it': self.num_it,
+            'num_epoch': self.num_epoch,
+            'cfgtxt': json.dumps(self.cfg),
+            'best_met': self.best_met
+        }
         torch.save(checkpoint, self.model_file.open('wb'))
 
-    def prepare_to_write(self, epoch: int,
-                         train_loss: torch.tensor,
-                         val_loss: torch.tensor,
-                         train_acc: Dict[str, torch.tensor],
-                         val_acc: Dict[str, torch.tensor],
-                         test_accs: List = None) -> List[torch.tensor]:
+    def prepare_to_write(
+            self,
+            train_loss: Dict[str, torch.tensor],
+            train_acc: Dict[str, torch.tensor],
+            val_loss: Dict[str, torch.tensor] = None,
+            val_acc: Dict[str, torch.tensor] = None
+    ) -> List[torch.tensor]:
 
+        epoch = self.num_epoch
         out_list = [epoch]
-        # , train_loss, val_loss]
+
         for k in self.loss_keys:
-            out_list += [train_loss[k], val_loss[k]]
+            out_list += [train_loss[k]]
+            if val_loss is not None:
+                out_list += [val_loss[k]]
+
         for k in self.met_keys:
-            out_list += [train_acc[k], val_acc[k]]
-        if test_accs is not None:
-            for t in test_accs:
-                out_list += [t]
+            out_list += [train_acc[k]]
+            if val_acc is not None:
+                out_list += [val_acc[k]]
+
         assert len(out_list) == len(self.log_keys)
         return out_list
 
@@ -322,52 +361,68 @@ class Learner:
     def epoch(self):
         return self.cfg['epochs']
 
-    def fit(self, epochs: int, lr: float, params_opt_dict: Optional[Dict] = None):
+    def fit(self, epochs: int, lr: float,
+            params_opt_dict: Optional[Dict] = None):
         "Main training loop"
+        # Print logger at the start of the training loop
         self.logger.info(self.cfg)
+        # Initialize the progress_bar
         mb = master_bar(range(epochs))
+        # Initialize optimizer
+        # Prepare Optimizer may need to be re-written as per use
         self.optimizer = self.prepare_optimizer(params_opt_dict)
+        # Initialize scheduler
+        # Prepare scheduler may need to re-written as per use
         self.lr_scheduler = self.prepare_scheduler(self.optimizer)
-        # Loop over epochs
+
+        # Write the top row display
         mb.write(self.log_keys, table=True)
         exception = False
         met_to_use = None
+        # Keep record of time until exit
         st_time = time.time()
         try:
+            # Loop over epochs
             for epoch in mb:
                 train_loss, train_acc = self.train_epoch(mb)
-                valid_loss, valid_acc = self.validate(self.data.valid_dl, mb)
 
-                valid_loss_to_use = valid_loss[self.loss_keys[0]]
+                valid_loss, valid_acc = self.validate(
+                    self.data.valid_dl, mb)
+
                 valid_acc_to_use = valid_acc[self.met_keys[0]]
-                test_accs = None
-                if self.cfg['test_at_runtime']:
-                    test_accs = self.do_test(mb)
-                if 'sfn' in self.cfg and self.cfg['sfn'] == 'ReduceLROnPlateau':
-                    # self.lr_scheduler.step(valid_loss_to_use)
-                    self.lr_scheduler.step(valid_acc_to_use)
-                else:
-                    self.lr_scheduler.step()
+                # Depending on type
+                self.scheduler_step(valid_acc_to_use)
 
-                to_write = self.prepare_to_write(
-                    epoch, train_loss, valid_loss,
-                    train_acc, valid_acc, test_accs)
-                mb.write([str(stat) if isinstance(stat, int)
-                          else f'{stat:.4f}' for stat in to_write], table=True)
-                self.update_log_file(
-                    good_format_stats(self.log_keys, to_write))
+                # Decide to save or not
                 met_to_use = valid_acc[self.met_keys[0]]
                 if self.best_met < met_to_use:
                     self.best_met = met_to_use
                     self.save_model_dict()
+
+                # Prepare what all to write
+                to_write = self.prepare_to_write(
+                    train_loss, train_acc,
+                    valid_loss, valid_acc
+                )
+
+                # Display on terminal
+                mb.write([str(stat) if isinstance(stat, int)
+                          else f'{stat:.4f}' for stat in to_write], table=True)
+
+                # Update in the log file
+                self.update_log_file(
+                    good_format_stats(self.log_keys, to_write))
+
         except Exception as e:
             exception = e
             raise e
         finally:
             end_time = time.time()
             self.update_log_file(
-                f'epochs done {epoch}. Exited due to exception {exception}. Total time taken {end_time - st_time: 0.4f}')
-
+                f'epochs done {epoch}. Exited due to exception {exception}. '
+                'Total time taken {end_time - st_time: 0.4f}\n\n'
+            )
+            # Decide to save finally or not
             if met_to_use:
                 if self.best_met < met_to_use:
                     self.save_model_dict()
@@ -381,23 +436,23 @@ class Learner:
 
     def prepare_scheduler(self, opt: torch.optim):
         "Prepares a LR scheduler on top of optimizer"
+        self.sched_using_val_metric = False
         if 'sfn' in self.cfg:
-            sfn = self.cfg['sfn']
+            self.sched_using_val_metric = self.cfg['sfn'] == 'ReduceLROnPlateau'
             lr_sched = getattr(torch.optim.lr_scheduler,
                                self.cfg['sfn'])
         else:
             lr_sched = torch.optim.lr_scheduler.LambdaLR(
                 opt, lambda epoch: 1)
-            # lr_sched = torch.optim.lr_scheduler.StepLR(
-            # opt, step_size=10, gamma=0.1)
-            # lr_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
-            # opt, )
-
-            # self.cfg['sfn'] = 'ReduceLROnPlateau'
-            # lr_sched = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            #     opt, patience=2, mode='max', factor=0.5, verbose=True)
 
         return lr_sched
+
+    def scheduler_step(self, val_metric):
+        if self.sched_using_val_metric:
+            self.lr_scheduler.step(val_metric)
+        else:
+            self.lr_scheduler.step()
+        return
 
     def overfit_batch(self, epochs: int, lr: float):
         "Sanity check to see if model overfits on a batch"

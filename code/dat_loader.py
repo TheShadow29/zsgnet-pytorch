@@ -87,7 +87,7 @@ class ImgQuDataset(Dataset):
 
         # self.image_data = pd.read_csv(csv_file)
         self.image_data = self._read_annotations(csv_file)
-
+        # self.image_data = self.image_data.iloc[:200]
         self.img_dir = Path(self.cfg.ds_info[self.ds_name]['img_dir'])
         self.phrase_len = 50
         self.item_getter = getattr(self, 'simple_item_getter')
