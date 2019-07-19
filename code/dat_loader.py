@@ -37,39 +37,6 @@ def pil2tensor(image, dtype: np.dtype):
     return torch.from_numpy(a.astype(dtype, copy=False))
 
 
-# class ResizeFixed:
-#     """
-#     Fixed size image
-#     """
-
-#     def __init__(self, out_width: int, out_height: int):
-#         self.w = out_width
-#         self.h = out_height
-
-#     def get_size(self, image_size: Tuple[int, int]) -> Tuple[int, int]:
-#         return self.w, self.h
-
-#     def __call__(self, image):
-#         # : PIL.Image.Image,
-#         # target: np.array):
-#         # -> Tuple[Image.Image, np.array]:
-#         """
-#         target assumed in xyxy format
-#         """
-#         size = self.get_size(image.size)
-#         # image = F.resize(image, size)
-#         image = image.resize(self.w, self.h)
-#         # target = np.array([target[0]/self.w, target[1]/self.h,
-#         #                    target[2]/self.w, target[3]/self.h])
-#         # target = np.array([
-#         #     target[0] * self.w / size[0],
-#         #     target[1] * self.h / size[1],
-#         #     target[2] * self.w / size[0],
-#         #     target[3] * self.h / size[1]
-#         # ])
-#         return image
-
-
 class ImgQuDataset(Dataset):
     """
     Any Grounding dataset.
@@ -87,20 +54,12 @@ class ImgQuDataset(Dataset):
 
         # self.image_data = pd.read_csv(csv_file)
         self.image_data = self._read_annotations(csv_file)
-        # self.image_data = self.image_data.iloc[:200]
+        self.image_data = self.image_data.iloc[:200]
         self.img_dir = Path(self.cfg.ds_info[self.ds_name]['img_dir'])
         self.phrase_len = 50
         self.item_getter = getattr(self, 'simple_item_getter')
         # normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
         # std=[0.229, 0.224, 0.225])
-
-        # self.resize_fixed_transform = ResizeFixed(
-        #     self.cfg.FIXED_W, self.cfg.FIXED_H)
-        # self.img_transforms = transforms.Compose([
-        # resize_fixed_transform,
-        # transforms.ToTensor(),
-        # normalize,
-        # ])
 
     def __len__(self):
         return len(self.image_data)
@@ -152,6 +111,7 @@ class ImgQuDataset(Dataset):
             'qvec': torch.from_numpy(q_chosen_emb_vecs),
             'qlens': torch.tensor(qlen),
             'annot': torch.from_numpy(target).float(),
+            'orig_annot': torch.tensor(annot).float(),
             'img_size': torch.tensor([h, w])
         }
 

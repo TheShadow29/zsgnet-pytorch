@@ -1,6 +1,7 @@
 import torch
 from torch import nn
-from anchors import create_anchors, reg_params_to_bbox, IoU_values
+from anchors import (create_anchors, reg_params_to_bbox,
+                     IoU_values, x1y1x2y2_to_y1x1y2x2)
 from typing import Dict
 from functools import partial
 # from simple_utils import (
@@ -86,23 +87,23 @@ class Evaluator(nn.Module):
         best_possible_result, _ = self.get_eval_result(
             actual_bbox, annot, expected_best_ids)
 
-        # max_pos_fin_results = self.fin_results
-        # msk = att_box_best < 0.5
         msk = None
         actual_result, pred_boxes = self.get_eval_result(
             actual_bbox, annot, att_box_best_ids, msk)
-        # acc_fin_results = self.fin_results
 
-        # self.remember_info = {'Acc': acc_fin_results,
-        # 'MaxPos': max_pos_fin_results}
-        # return self.actual_result
         out_dict = {}
         out_dict['Acc'] = actual_result
         out_dict['MaxPos'] = best_possible_result
-
-        out_dict['reshaped_boxes'] = reshape(
-            (pred_boxes + 1)/2, (inp['img_size']))
         out_dict['idxs'] = inp['idxs']
+
+        reshaped_boxes = x1y1x2y2_to_y1x1y2x2(reshape(
+            (pred_boxes + 1)/2, (inp['img_size'])))
+        out_dict['pred_boxes'] = reshaped_boxes
+        # orig_annot = inp['orig_annot']
+        # Sanity check
+        # iou1 = (torch.diag(IoU_values(reshaped_boxes, orig_annot))
+        #         >= self.acc_iou_threshold).float().mean()
+        # assert actual_result.item() == iou1.item()
         return out_dict
 
     def get_eval_result(self, actual_bbox, annot, ids_to_use, msk=None):
