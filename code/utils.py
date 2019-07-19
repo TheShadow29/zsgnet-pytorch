@@ -16,6 +16,7 @@ import shutil
 import json
 from fastprogress.fastprogress import master_bar, progress_bar
 import logging
+import pickle
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
                     datefmt='%m/%d/%Y %H:%M:%S',
                     level=logging.INFO)
@@ -127,7 +128,13 @@ class Learner:
         #         self.log_keys += [f'test_{acc_met_key}']
 
         self.log_file = Path(self.data.path) / 'logs' / f'{self.uid}.txt'
-        self.log_dir = self.log_file.parent / f'{self.uid}'
+
+        self.tb_log_dir = Path(self.data.path) / 'tb_logs' / f'{self.uid}'
+
+        self.extra_log_dir = Path(self.data.path) / \
+            'extra_logs' / f'{self.uid}'
+        self.extra_log_dir.mkdir(exist_ok=True, parents=True)
+        self.predictions_file = self.extra_log_dir / f'predictions.pkl'
 
         self.model_file = Path(self.data.path) / 'models' / f'{self.uid}.pth'
         self.model_file.parent.mkdir(exist_ok=True, parents=True)
@@ -184,35 +191,43 @@ class Learner:
         with self.log_file.open('a') as f:
             f.write(towrite + '\n')
 
-    def do_test(self, mb=None) -> List[torch.tensor]:
-        test_accs = []
-        for t in self.data.test_dl:
-            test_loss, test_acc = self.validate(mb=mb, db=t)
-            test_accs += [test_acc[self.met_keys[0]]]
-        return test_accs
+    # def do_test(self, mb=None) -> List[torch.tensor]:
+    #     test_accs = []
+    #     for t in self.data.test_dl:
+    #         test_loss, test_acc = self.validate(mb=mb, db=t)
+    #         test_accs += [test_acc[self.met_keys[0]]]
+    #     return test_accs
 
-    def get_predictions(self, db=None):
-        if db is None:
-            db = self.data.test_dl
-        else:
-            if not isinstance(db, list):
-                db = [db]
-        out_dict = {}
-        with torch.no_grad():
-            for tidx, t in enumerate(db):
-                results_dict = {'Acc': [], 'MaxPos': []}
-                strt_idx = 0
-                for batch in tqdm(t):
-                    for k in batch:
-                        batch[k] = batch[k].to(self.device)
-                    out = self.mdl(batch)
-                    metric = self.eval_fn(out, batch)
-                    remember_info = self.eval_fn.remember_info
-                    for k in remember_info:
-                        results_dict[k] += remember_info[k].tolist()
+    # def get_predictions(self, db=None):
+    #     if db is None:
+    #         db = self.data.test_dl
+    #     else:
+    #         if not isinstance(db, list):
+    #             db = [db]
+    #     out_dict = {}
+    #     with torch.no_grad():
+    #         for tidx, t in enumerate(db):
+    #             results_dict = {'Acc': [], 'MaxPos': []}
+    #             strt_idx = 0
+    #             for batch in tqdm(t):
+    #                 for k in batch:
+    #                     batch[k] = batch[k].to(self.device)
+    #                 out = self.mdl(batch)
+    #                 metric = self.eval_fn(out, batch)
+    #                 remember_info = self.eval_fn.remember_info
+    #                 for k in remember_info:
+    #                     results_dict[k] += remember_info[k].tolist()
 
-                out_dict[f'test_{tidx}'] = results_dict
-        return out_dict
+    #             out_dict[f'test_{tidx}'] = results_dict
+    #     return out_dict
+
+    def get_predictions_list(self, predictions: Dict[str, List]) -> List[Dict]:
+        "Converts dictionary of lists to list of dictionary"
+        keys = list(predictions.keys())
+        num_preds = len(predictions[keys[0]])
+        out_list = [{k: predictions[k][ind] for k in keys}
+                    for ind in range(num_preds)]
+        return out_list
 
     def validate(self, db: Optional[DataLoader] = None,
                  mb=None) -> List[torch.tensor]:
@@ -220,6 +235,8 @@ class Learner:
         self.mdl.eval()
         if db is None:
             db = self.data.valid_dl
+
+        predicted_box_dict_list = []
         with torch.no_grad():
             val_losses = {k: [] for k in self.loss_keys}
             eval_metrics = {k: [] for k in self.met_keys}
@@ -236,12 +253,17 @@ class Learner:
                 for k in self.met_keys:
                     eval_metrics[k].append(metric[k].detach().cpu())
                 nums.append(batch[next(iter(batch))].shape[0])
-
-            del batch
+                prediction_dict = {
+                    'id': metric['idxs'].tolist(),
+                    'pred_boxes': metric['pred_boxes'].tolist(),
+                    'pred_scores': metric['pred_scores'].tolist()
+                }
+                predicted_box_dict_list += self.get_predictions_list(
+                    prediction_dict)
             nums = torch.tensor(nums).float()
             val_loss = compute_avg_dict(val_losses, nums)
             eval_metric = compute_avg_dict(eval_metrics, nums)
-            return val_loss, eval_metric
+            return val_loss, eval_metric, predicted_box_dict_list
 
     def train_epoch(self, mb) -> List[torch.tensor]:
         "One epoch used for training"
@@ -329,6 +351,9 @@ class Learner:
         }
         torch.save(checkpoint, self.model_file.open('wb'))
 
+    def update_prediction_file(self, predictions):
+        pickle.dump(predictions, self.predictions_file.open('wb'))
+
     def prepare_to_write(
             self,
             train_loss: Dict[str, torch.tensor],
@@ -386,7 +411,7 @@ class Learner:
             for epoch in mb:
                 train_loss, train_acc = self.train_epoch(mb)
 
-                valid_loss, valid_acc = self.validate(
+                valid_loss, valid_acc, predictions = self.validate(
                     self.data.valid_dl, mb)
 
                 valid_acc_to_use = valid_acc[self.met_keys[0]]
@@ -398,7 +423,7 @@ class Learner:
                 if self.best_met < met_to_use:
                     self.best_met = met_to_use
                     self.save_model_dict()
-
+                    self.update_prediction_file(predictions)
                 # Prepare what all to write
                 to_write = self.prepare_to_write(
                     train_loss, train_acc,
@@ -420,7 +445,7 @@ class Learner:
             end_time = time.time()
             self.update_log_file(
                 f'epochs done {epoch}. Exited due to exception {exception}. '
-                'Total time taken {end_time - st_time: 0.4f}\n\n'
+                f'Total time taken {end_time - st_time: 0.4f}\n\n'
             )
             # Decide to save finally or not
             if met_to_use:

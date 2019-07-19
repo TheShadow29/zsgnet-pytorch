@@ -46,9 +46,6 @@ class Evaluator(nn.Module):
 
         self.acc_iou_threshold = self.cfg['acc_iou_threshold']
 
-    def after_init(self):
-        pass
-
     def forward(self, out: Dict[str, torch.tensor],
                 inp: Dict[str, torch.tensor]) -> Dict[str, torch.tensor]:
 
@@ -77,7 +74,8 @@ class Evaluator(nn.Module):
 
         att_box_sigmoid = torch.sigmoid(att_box).squeeze(-1)
         att_box_best, att_box_best_ids = att_box_sigmoid.max(1)
-        self.att_box_best = att_box_best
+        # self.att_box_best = att_box_best
+
         ious1 = IoU_values(annot, anchs)
         gt_mask, expected_best_ids = ious1.max(1)
 
@@ -99,6 +97,7 @@ class Evaluator(nn.Module):
         reshaped_boxes = x1y1x2y2_to_y1x1y2x2(reshape(
             (pred_boxes + 1)/2, (inp['img_size'])))
         out_dict['pred_boxes'] = reshaped_boxes
+        out_dict['pred_scores'] = att_box_best
         # orig_annot = inp['orig_annot']
         # Sanity check
         # iou1 = (torch.diag(IoU_values(reshaped_boxes, orig_annot))
