@@ -409,6 +409,7 @@ class Learner:
         try:
             # Loop over epochs
             for epoch in mb:
+                self.num_epoch += 1
                 train_loss, train_acc = self.train_epoch(mb)
 
                 valid_loss, valid_acc, predictions = self.validate(

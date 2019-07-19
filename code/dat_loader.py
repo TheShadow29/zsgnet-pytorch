@@ -107,7 +107,7 @@ class ImgQuDataset(Dataset):
         img = pil2tensor(img, np.float_).float().div_(255)
         out = {
             'img': img,
-            'idxs': torch.tensor(idx),
+            'idxs': torch.tensor(idx).long(),
             'qvec': torch.from_numpy(q_chosen_emb_vecs),
             'qlens': torch.tensor(qlen),
             'annot': torch.from_numpy(target).float(),
