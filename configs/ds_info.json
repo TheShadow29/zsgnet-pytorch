@@ -1,0 +1,26 @@
+{
+    "flickr30k": {
+	"data_dir": "./data/flickr30k",
+	"img_dir": "./data/flickr30k_images",
+	"trn_csv_file": "./data/flickr30k/csv_dir/train.csv",
+	"val_csv_file": "./data/flickr30k/csv_dir/val.csv"
+    },
+    "refclef": {
+	"data_dir": "./data/referit/refclef",
+	"img_dir": "./data/referit/saiapr_tc12_images",
+	"trn_csv_file": "./data/referit/csv_dir/train.csv",
+	"val_csv_file": "./data/referit/csv_dir/val.csv"
+    },
+    "vg_split": {
+	"data_dir": "/scratch/arka/Ark_git_files/visual_genome/vg_split",
+	"img_dir": "/scratch/arka/Ark_git_files/visual_genome"
+    },
+    "refcoco": {
+	"data_dir": "/scratch/arka/Ark_git_files/referit/refcoco",
+	"img_dir": "/scratch/arka/Ark_git_files/coco/images/train2014/"
+    },
+    "refcoco+":{
+	"data_dir": "/scratch/arka/Ark_git_files/referit/refcoco+",
+	"img_dir": "/scratch/arka/Ark_git_files/coco/images/train2014/"
+    }
+}
