@@ -15,7 +15,7 @@ cfg.flickr30k = CN({'img_dir': './data/flickr30k/flickr30k_images'})
 
 # Training
 cfg.local_rank = 0
-# cfg.do_dist = False
+cfg.do_dist = False
 
 
 key_maps = {}

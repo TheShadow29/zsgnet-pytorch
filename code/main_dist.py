@@ -33,10 +33,11 @@ def learner_init(uid: str, cfg: CN) -> Learner:
     num_anchors = len(ratios) * len(scales)
     mdl = get_default_net(num_anchors=num_anchors, cfg=cfg)
     mdl.to(device)
-    mdl = torch.nn.parallel.DistributedDataParallel(
-        mdl, device_ids=[cfg.local_rank],
-        output_device=cfg.local_rank, broadcast_buffers=True,
-        find_unused_parameters=True)
+    if cfg.do_dist:
+        mdl = torch.nn.parallel.DistributedDataParallel(
+            mdl, device_ids=[cfg.local_rank],
+            output_device=cfg.local_rank, broadcast_buffers=True,
+            find_unused_parameters=True)
     loss_fn = get_default_loss(ratios, scales, cfg)
     # loss_fn.to(device)
     eval_fn = get_default_eval(ratios, scales, cfg)
@@ -57,8 +58,11 @@ def main_dist(uid: str, **kwargs):
     """
     cfg = conf
     num_gpus = torch.cuda.device_count()
+    cfg.num_gpus = num_gpus
+
     if num_gpus > 1:
         assert 'local_rank' in kwargs
+        cfg.do_dist = True
         torch.cuda.set_device(kwargs['local_rank'])
         torch.distributed.init_process_group(
             backend="nccl", init_method="env://"
@@ -67,7 +71,7 @@ def main_dist(uid: str, **kwargs):
 
     # Update the config file depending on the command line args
     cfg = update_from_dict(cfg, kwargs, key_maps)
-    cfg.num_gpus = num_gpus
+
     # Freeze the cfg, can no longer be changed
     cfg.freeze()
     # print(cfg)

@@ -4,8 +4,6 @@ from anchors import (create_anchors, reg_params_to_bbox,
                      IoU_values, x1y1x2y2_to_y1x1y2x2)
 from typing import Dict
 from functools import partial
-# from simple_utils import (
-# rcrc2tlbr, get_pil_images_from_batch, save_img_with_boxes_easy)
 
 
 def reshape(box, new_size):
