@@ -47,6 +47,7 @@ class BackBone(nn.Module):
         Make required forward hooks
         """
         super().__init__()
+        self.device = torch.device('cuda')
         self.encoder = encoder
         self.num_chs = self.num_channels()
         self.fpn = FPN_backbone(self.num_chs, cfg, feat_size=out_chs)
@@ -64,7 +65,8 @@ class BackBone(nn.Module):
         Expects x in the form B x C x H x W
         we: B x wdim
         """
-        grid = create_grid((x.size(2), x.size(3)), flatten=False).cuda()
+        grid = create_grid((x.size(2), x.size(3)),
+                           flatten=False).to(self.device)
         grid = grid.permute(2, 0, 1).contiguous()
         grid_tile = grid.view(1, grid.size(0), grid.size(1), grid.size(2)).expand(
             we.size(0), grid.size(0), grid.size(1), grid.size(2))
@@ -132,6 +134,7 @@ class ZSGNet(nn.Module):
         self.backbone = backbone
         # Assume the output from each
         # component of backbone will have 256 channels
+        self.device = torch.device('cuda')
         if cfg is None:
             self.cfg = {"emb_dim": 300,
                         "use_bidirectional": True, "lstm_dim": 256}
@@ -217,7 +220,8 @@ class ZSGNet(nn.Module):
                                              x.size(2), x.size(3))
 
         if append_grid_centers:
-            grid = create_grid((x.size(2), x.size(3)), flatten=False).cuda()
+            grid = create_grid((x.size(2), x.size(3)),
+                               flatten=False).to(self.device)
             grid = grid.permute(2, 0, 1).contiguous()
             grid_tile = grid.view(1, grid.size(0), grid.size(1), grid.size(2)).expand(
                 we.size(0), grid.size(0), grid.size(1), grid.size(2))
@@ -233,8 +237,8 @@ class ZSGNet(nn.Module):
             hidden_a = torch.randn(2, bs, self.lstm_dim)
             hidden_b = torch.randn(2, bs, self.lstm_dim)
 
-        hidden_a = hidden_a.cuda()
-        hidden_b = hidden_b.cuda()
+        hidden_a = hidden_a.to(self.device)
+        hidden_b = hidden_b.to(self.device)
 
         return (hidden_a, hidden_b)
 
@@ -350,9 +354,9 @@ class ZSGNet(nn.Module):
                      for feature in feat_out], dim=1)
 
         feat_sizes = torch.Tensor([[f.size(2), f.size(3)]
-                                   for f in feat_out]).cuda()
+                                   for f in feat_out]).to(self.device)
 
-        num_f_out = torch.Tensor([len(feat_out)]).cuda()
+        num_f_out = torch.Tensor([len(feat_out)]).to(self.device)
 
         # if self.cfg['use_model'] == 'yolo' or \
         # self.cfg['use_model'] == 'retina' or \

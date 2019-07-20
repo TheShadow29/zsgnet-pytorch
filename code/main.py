@@ -17,7 +17,7 @@ from torch.optim import Adam
 import numpy as np
 from tqdm import tqdm
 from utils import Learner
-import logging
+# import logging
 from extended_config import cfg as conf
 
 # logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',

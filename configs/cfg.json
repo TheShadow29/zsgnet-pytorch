@@ -68,6 +68,7 @@
     "lamb_reg": 1,
     "lambda_rel": 0.1,
     "resume_path": "",
+    "resume": true,
     "load_opt": false,
     "strict_load": false,
     "load_normally": true,

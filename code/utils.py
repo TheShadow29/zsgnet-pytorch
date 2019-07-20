@@ -105,9 +105,11 @@ def synchronize():
     dist.barrier()
 
 
-def exec_func_if_main_proc(func: Callable) -> Callable:
-    if is_main_process():
-        return func
+def exec_func_if_main_proc(func: Callable):
+    def wrapper(*args, **kwargs):
+        if is_main_process():
+            func(*args, **kwargs)
+    return wrapper
 
 
 @dataclass
@@ -199,8 +201,7 @@ class Learner:
         if not isinstance(self.data.test_dl, list):
             self.data.test_dl = [self.data.test_dl]
 
-        # Done only for proc 0
-        self.create_log_dirs()
+        self.init_log_dirs()
 
         self.prepare_log_keys()
 
@@ -248,8 +249,7 @@ class Learner:
         # )
         return logger
 
-    @exec_func_if_main_proc
-    def create_log_dirs(self):
+    def init_log_dirs(self):
         """
         Convenience function to create the following:
         1. Log dir to store log file in txt format
@@ -262,24 +262,32 @@ class Learner:
         # Saves the text logs
         self.txt_log_file = Path(
             self.data.path) / 'txt_logs' / f'{self.uid}.txt'
-        self.txt_log_file.parent.mkdir(exist_ok=True, parents=True)
 
         # Saves the output of self.logger
         self.extra_logger_file = Path(
             self.data.path) / 'ext_logs' / f'{self.uid}.txt'
-        self.extra_logger_file.parent.mkdir(exist_ok=True)
 
         # Saves SummaryWriter outputs
         self.tb_log_dir = Path(self.data.path) / 'tb_logs' / f'{self.uid}'
-        self.tb_log_dir.mkdir(exist_ok=True, parents=True)
 
         # Saves the trained model
         self.model_file = Path(self.data.path) / 'models' / f'{self.uid}.pth'
-        self.model_file.parent.mkdir(exist_ok=True)
 
         # Saves the output predictions
         self.predictions_dir = Path(
             self.data.path) / 'predictions' / f'{self.uid}'
+
+        self.create_log_dirs()
+
+    @exec_func_if_main_proc
+    def create_log_dirs(self):
+        """
+        Creates the directories initialized in init_log_dirs
+        """
+        self.txt_log_file.parent.mkdir(exist_ok=True, parents=True)
+        self.extra_logger_file.parent.mkdir(exist_ok=True)
+        self.tb_log_dir.mkdir(exist_ok=True, parents=True)
+        self.model_file.parent.mkdir(exist_ok=True)
         self.predictions_dir.mkdir(exist_ok=True, parents=True)
 
     def prepare_log_keys(self):
@@ -451,6 +459,7 @@ class Learner:
     @exec_func_if_main_proc
     def save_model_dict(self):
         "Save the model and optimizer"
+        # if is_main_process():
         checkpoint = {
             'model_state_dict': self.mdl.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
@@ -466,7 +475,7 @@ class Learner:
     def update_prediction_file(self, predictions, pred_file):
         pickle.dump(predictions, pred_file.open('wb'))
 
-    @exec_func_if_main_proc
+    # @exec_func_if_main_proc
     def prepare_to_write(
             self,
             train_loss: Dict[str, torch.tensor],
@@ -499,6 +508,10 @@ class Learner:
     def epoch(self):
         return self.cfg['epochs']
 
+    @exec_func_if_main_proc
+    def master_bar_write(self, mb, **kwargs):
+        mb.write(**kwargs)
+
     def fit(self, epochs: int, lr: float,
             params_opt_dict: Optional[Dict] = None):
         "Main training loop"
@@ -514,7 +527,8 @@ class Learner:
         self.lr_scheduler = self.prepare_scheduler(self.optimizer)
 
         # Write the top row display
-        mb.write(self.log_keys, table=True)
+        # mb.write(self.log_keys, table=True)
+        self.master_bar_write(mb, line=self.log_keys, table=True)
         exception = False
         met_to_use = None
         # Keep record of time until exit
@@ -532,6 +546,7 @@ class Learner:
                 # Depending on type
                 self.scheduler_step(valid_acc_to_use)
 
+                # Now only need main process
                 # Decide to save or not
                 met_to_use = valid_acc[self.met_keys[0]]
                 if self.best_met < met_to_use:
@@ -540,6 +555,7 @@ class Learner:
                     self.update_prediction_file(
                         predictions,
                         self.predictions_dir / f'val_preds_{self.uid}.pkl')
+
                 # Prepare what all to write
                 to_write = self.prepare_to_write(
                     train_loss, train_acc,
@@ -547,8 +563,11 @@ class Learner:
                 )
 
                 # Display on terminal
-                mb.write([str(stat) if isinstance(stat, int)
-                          else f'{stat:.4f}' for stat in to_write], table=True)
+                assert to_write is not None
+                mb_write = [str(stat) if isinstance(stat, int)
+                            else f'{stat:.4f}' for stat in to_write]
+                self.master_bar_write(mb, line=mb_write, table=True)
+
                 # for k, record in zip(self.log_keys, to_write):
                 #     self.writer.add_scalar(
                 #         tag=k, scalar_value=record, global_step=self.num_epoch)
