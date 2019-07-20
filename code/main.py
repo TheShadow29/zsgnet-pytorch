@@ -20,10 +20,10 @@ from utils import Learner
 import logging
 from extended_config import cfg as conf
 
-logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
-                    datefmt='%m/%d/%Y %H:%M:%S',
-                    level=logging.INFO)
-logger = logging.getLogger(__name__)
+# logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
+#                     datefmt='%m/%d/%Y %H:%M:%S',
+#                     level=logging.INFO)
+# logger = logging.getLogger(__name__)
 
 
 def sanity_check(learn):
@@ -88,7 +88,8 @@ def learner_init(uid, cfg):
     # db = get_data(bs=cfg['bs'] * device_count, nw=cfg['nw'], bsv=cfg['bsv'] * device_count,
     #               nwv=cfg['nwv'], devices=cfg['devices'], do_tfms=cfg['do_tfms'],
     #               cfg=cfg, data_cfg=data_cfg)
-    db = get_data(cfg, ds_name=cfg['ds_to_use'])
+    # db = get_data(cfg, ds_name=cfg['ds_to_use'])
+    db = get_data(cfg)
     opt_fn = partial(torch.optim.Adam, betas=(0.9, 0.99))
 
     # Note: Currently using default optimizer

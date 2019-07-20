@@ -115,3 +115,7 @@ class Evaluator(nn.Module):
         ious = torch.diag(IoU_values(best_boxes, annot))
         # self.fin_results = ious
         return (ious >= self.acc_iou_threshold).float().mean(), best_boxes
+
+
+def get_default_eval(ratios, scales, cfg):
+    return Evaluator(ratios, scales, cfg)

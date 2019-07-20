@@ -7,6 +7,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 from dataclasses import dataclass
 from pathlib import Path
+import sys
 import re
 import numpy as np
 from collections import Counter
@@ -18,11 +19,95 @@ from fastprogress.fastprogress import master_bar, progress_bar
 import logging
 import pickle
 from torch.utils.tensorboard import SummaryWriter
+from torch import distributed as dist
+from yacs.config import CfgNode as CN
 
 
-logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
-                    datefmt='%m/%d/%Y %H:%M:%S',
-                    level=logging.INFO)
+def update_from_dict(cfg: CN, dct: Dict[str, Any],
+                     key_maps: Dict[str, str] = None) -> CN:
+    """
+    Given original CfgNode (cfg) and input dictionary allows changing
+    the cfg with the updated dictionary values
+    Optional key_maps argument which defines a mapping between
+    same keys of the cfg node. Only used for convenience
+    Adapted from:
+    https://github.com/rbgirshick/yacs/blob/master/yacs/config.py#L219
+    """
+    # Original cfg
+    root = cfg
+
+    # Change the input dictionary using keymaps
+    # Now it is aligned with the cfg
+    full_key_list = list(dct.keys())
+    for full_key in full_key_list:
+        if full_key in key_maps:
+            cfg[full_key] = dct[full_key]
+            new_key = key_maps[full_key]
+            dct[new_key] = dct.pop(full_key)
+
+    # Convert the cfg using dictionary input
+    for full_key, v in dct.items():
+        if root.key_is_deprecated(full_key):
+            continue
+        if root.key_is_renamed(full_key):
+            root.raise_key_rename_error(full_key)
+        key_list = full_key.split(".")
+        d = cfg
+        for subkey in key_list[:-1]:
+            # Most important statement
+            assert subkey in d, f'key {full_key} doesnot exist'
+            d = d[subkey]
+
+        subkey = key_list[-1]
+        # Most important statement
+        assert subkey in d, f'key {full_key} doesnot exist'
+
+        value = cfg._decode_cfg_value(v)
+
+        assert isinstance(value, type(d[subkey]))
+        d[subkey] = value
+
+    return cfg
+
+
+def get_world_size():
+    if not dist.is_available():
+        return 1
+    if not dist.is_initialized():
+        return 1
+    return dist.get_world_size()
+
+
+def get_rank():
+    if not dist.is_available():
+        return 0
+    if not dist.is_initialized():
+        return 0
+    return dist.get_rank()
+
+
+def is_main_process():
+    return get_rank() == 0
+
+
+def synchronize():
+    """
+    Helper function to synchronize (barrier) among all processes when
+    using distributed training
+    """
+    if not dist.is_available():
+        return
+    if not dist.is_initialized():
+        return
+    world_size = dist.get_world_size()
+    if world_size == 1:
+        return
+    dist.barrier()
+
+
+def exec_func_if_main_proc(func: Callable) -> Callable:
+    if is_main_process():
+        return func
 
 
 @dataclass
@@ -105,47 +190,23 @@ class Learner:
     cfg: Dict
     eval_fn: nn.Module
     opt_fn: Callable
-    device: torch.device = torch.device('cuda:0')
+    device: torch.device = torch.device('cuda')
 
     def __post_init__(self):
         "Setup log file, load model if required"
-        self.logger = logging.getLogger(__name__)
+        # ToDo: shift this to DataWrap and make it Dict
+        # Makes the test file correspondence explicit
         if not isinstance(self.data.test_dl, list):
             self.data.test_dl = [self.data.test_dl]
 
-        self.loss_keys = self.loss_fn.loss_keys
-        self.met_keys = self.eval_fn.met_keys
+        # Done only for proc 0
+        self.create_log_dirs()
 
-        # When writing Training and Validation together
-        self.log_keys = ['epochs'] + self.prepare_log_keys(
-            [self.loss_keys, self.met_keys],
-            ['trn', 'val']
-        )
-        # One shouldn't test at runtime
-        # if self.cfg['test_at_runtime']:
-        #     acc_met_key = self.met_keys[0]
-        #     if isinstance(self.data.test_dl, list):
-        #         for i in range(len(self.data.test_dl)):
-        #             self.log_keys += [f'test{i+1}_{acc_met_key}']
-        #     else:
-        #         self.log_keys += [f'test_{acc_met_key}']
-
-        self.log_file = Path(self.data.path) / 'logs' / f'{self.uid}.txt'
-
-        self.tb_log_dir = Path(self.data.path) / 'tb_logs' / f'{self.uid}'
-        self.tb_log_dir.mkdir(exist_ok=True, parents=True)
-
-        self.writer = SummaryWriter(log_dir=self.tb_log_dir)
-
-        self.extra_log_dir = Path(self.data.path) / \
-            'extra_logs' / f'{self.uid}'
-        self.extra_log_dir.mkdir(exist_ok=True, parents=True)
-        self.predictions_file = self.extra_log_dir / f'predictions.pkl'
-
-        self.model_file = Path(self.data.path) / 'models' / f'{self.uid}.pth'
-        self.model_file.parent.mkdir(exist_ok=True, parents=True)
+        self.prepare_log_keys()
 
         self.prepare_log_file()
+
+        self.logger = self.init_logger()
 
         # Set the number of iterations, epochs, best_met to 0.
         # Updated in loading if required
@@ -159,76 +220,110 @@ class Learner:
                 resume_path=self.cfg['resume_path'],
                 load_opt=self.cfg['load_opt'])
 
-        self.writer.add_text(tag='cfg', text_string=json.dumps(self.cfg),
-                             global_step=self.num_epoch)
+        # self.writer.add_text(tag='cfg', text_string=json.dumps(self.cfg),
+            # global_step=self.num_epoch)
 
-    def prepare_log_keys(self, keys_list: List[List[str]],
-                         prefix: List[str]) -> List[str]:
-        """
-        Convenience function to create log keys
-        keys_list: List[loss_keys, met_keys]
-        prefix: List['trn', 'val']
-        """
-        log_keys = []
-        for keys in keys_list:
-            for key in keys:
-                log_keys += [f'{p}_{key}' for p in prefix]
-        return log_keys
+    def init_logger(self):
+        logger = logging.getLogger(__name__)
+        logger.setLevel(logging.DEBUG)
+        if not is_main_process():
+            return logger
+        ch = logging.StreamHandler(stream=sys.stdout)
+        ch.setLevel(logging.INFO)
+        formatter = logging.Formatter(
+            "%(asctime)s %(name)s %(levelname)s: %(message)s")
+        ch.setFormatter(formatter)
+        logger.addHandler(ch)
 
+        fh = logging.FileHandler(str(self.extra_logger_file))
+        fh.setLevel(logging.DEBUG)
+        fh.setFormatter(formatter)
+        logger.addHandler(fh)
+        # logging.basicConfig(
+        #     filename=self.extra_logger_file,
+        #     filemode='a',
+        #     format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
+        #     datefmt='%m/%d/%Y %H:%M:%S',
+        #     level=logging.INFO
+        # )
+        return logger
+
+    @exec_func_if_main_proc
+    def create_log_dirs(self):
+        """
+        Convenience function to create the following:
+        1. Log dir to store log file in txt format
+        2. Extra Log dir to store the logger output
+        3. Tb log dir to store tensorboard files
+        4. Model dir to save the model files
+        5. Predictions dir to store the predictions of the saved model
+        6. [Optional] Can add some 3rd party logger
+        """
+        # Saves the text logs
+        self.txt_log_file = Path(
+            self.data.path) / 'txt_logs' / f'{self.uid}.txt'
+        self.txt_log_file.parent.mkdir(exist_ok=True, parents=True)
+
+        # Saves the output of self.logger
+        self.extra_logger_file = Path(
+            self.data.path) / 'ext_logs' / f'{self.uid}.txt'
+        self.extra_logger_file.parent.mkdir(exist_ok=True)
+
+        # Saves SummaryWriter outputs
+        self.tb_log_dir = Path(self.data.path) / 'tb_logs' / f'{self.uid}'
+        self.tb_log_dir.mkdir(exist_ok=True, parents=True)
+
+        # Saves the trained model
+        self.model_file = Path(self.data.path) / 'models' / f'{self.uid}.pth'
+        self.model_file.parent.mkdir(exist_ok=True)
+
+        # Saves the output predictions
+        self.predictions_dir = Path(
+            self.data.path) / 'predictions' / f'{self.uid}'
+        self.predictions_dir.mkdir(exist_ok=True, parents=True)
+
+    def prepare_log_keys(self):
+        """
+        Creates the relevant keys to be logged.
+        Mainly used by the txt logger to output in a good format
+        """
+        def _prepare_log_keys(keys_list: List[List[str]],
+                              prefix: List[str]) -> List[str]:
+            """
+            Convenience function to create log keys
+            keys_list: List[loss_keys, met_keys]
+            prefix: List['trn', 'val']
+            """
+            log_keys = []
+            for keys in keys_list:
+                for key in keys:
+                    log_keys += [f'{p}_{key}' for p in prefix]
+            return log_keys
+
+        self.loss_keys = self.loss_fn.loss_keys
+        self.met_keys = self.eval_fn.met_keys
+
+        # When writing Training and Validation together
+        self.log_keys = ['epochs'] + _prepare_log_keys(
+            [self.loss_keys, self.met_keys],
+            ['trn', 'val']
+        )
+
+    @exec_func_if_main_proc
     def prepare_log_file(self):
         "Prepares the log files depending on arguments"
-        if self.log_file.exists():
-            if self.cfg['del_existing']:
-                self.logger.info(
-                    f'removing existing log with same name {self.log_dir.stem}')
-                shutil.rmtree(self.log_dir)
-                f = self.log_file.open('w')
-            else:
-                f = self.log_file.open('a')
-        else:
-            self.log_file.parent.mkdir(exist_ok=True, parents=True)
-            f = self.log_file.open('w')
-
+        f = self.txt_log_file.open('a')
         cfgtxt = json.dumps(self.cfg)
         f.write(cfgtxt)
         f.write('\n\n')
         f.write('  '.join(self.log_keys) + '\n')
         f.close()
 
+    @exec_func_if_main_proc
     def update_log_file(self, towrite: str):
         "Updates the log files as and when required"
-        with self.log_file.open('a') as f:
+        with self.txt_log_file.open('a') as f:
             f.write(towrite + '\n')
-
-    # def do_test(self, mb=None) -> List[torch.tensor]:
-    #     test_accs = []
-    #     for t in self.data.test_dl:
-    #         test_loss, test_acc = self.validate(mb=mb, db=t)
-    #         test_accs += [test_acc[self.met_keys[0]]]
-    #     return test_accs
-
-    # def get_predictions(self, db=None):
-    #     if db is None:
-    #         db = self.data.test_dl
-    #     else:
-    #         if not isinstance(db, list):
-    #             db = [db]
-    #     out_dict = {}
-    #     with torch.no_grad():
-    #         for tidx, t in enumerate(db):
-    #             results_dict = {'Acc': [], 'MaxPos': []}
-    #             strt_idx = 0
-    #             for batch in tqdm(t):
-    #                 for k in batch:
-    #                     batch[k] = batch[k].to(self.device)
-    #                 out = self.mdl(batch)
-    #                 metric = self.eval_fn(out, batch)
-    #                 remember_info = self.eval_fn.remember_info
-    #                 for k in remember_info:
-    #                     results_dict[k] += remember_info[k].tolist()
-
-    #             out_dict[f'test_{tidx}'] = results_dict
-    #     return out_dict
 
     def get_predictions_list(self, predictions: Dict[str, List]) -> List[Dict]:
         "Converts dictionary of lists to list of dictionary"
@@ -299,12 +394,13 @@ class Learner:
             trn_loss.add_value(out_loss)
             trn_acc.add_value(metric)
 
-            self.writer.add_scalar(
-                tag='trn_loss', scalar_value=out_loss[self.loss_keys[0]],
-                global_step=self.num_it)
-
-            mb.child.comment = (
-                f'LossB {loss: .4f} | SmLossB {trn_loss.smooth1: .4f} | AccB {trn_acc.smooth1: .4f}')
+            # self.writer.add_scalar(
+            #     tag='trn_loss', scalar_value=out_loss[self.loss_keys[0]],
+            #     global_step=self.num_it)
+            comment_to_print = f'LossB {loss: .4f} | SmLossB {trn_loss.smooth1: .4f} | AccB {trn_acc.smooth1: .4f}'
+            mb.child.comment = comment_to_print
+            if self.num_it % 2 == 0:
+                self.logger.debug(f'Num_it {self.num_it} {comment_to_print}')
             del out_loss
             del loss
             # print(f'Done {batch_id}')
@@ -352,6 +448,7 @@ class Learner:
                 self.lr_scheduler.load_state_dict(
                     checkpoint['scheduler_state_dict'])
 
+    @exec_func_if_main_proc
     def save_model_dict(self):
         "Save the model and optimizer"
         checkpoint = {
@@ -365,9 +462,11 @@ class Learner:
         }
         torch.save(checkpoint, self.model_file.open('wb'))
 
-    def update_prediction_file(self, predictions):
-        pickle.dump(predictions, self.predictions_file.open('wb'))
+    @exec_func_if_main_proc
+    def update_prediction_file(self, predictions, pred_file):
+        pickle.dump(predictions, pred_file.open('wb'))
 
+    @exec_func_if_main_proc
     def prepare_to_write(
             self,
             train_loss: Dict[str, torch.tensor],
@@ -438,7 +537,9 @@ class Learner:
                 if self.best_met < met_to_use:
                     self.best_met = met_to_use
                     self.save_model_dict()
-                    self.update_prediction_file(predictions)
+                    self.update_prediction_file(
+                        predictions,
+                        self.predictions_dir / f'val_preds_{self.uid}.pkl')
                 # Prepare what all to write
                 to_write = self.prepare_to_write(
                     train_loss, train_acc,
@@ -448,9 +549,9 @@ class Learner:
                 # Display on terminal
                 mb.write([str(stat) if isinstance(stat, int)
                           else f'{stat:.4f}' for stat in to_write], table=True)
-                for k, record in zip(self.log_keys, to_write):
-                    self.writer.add_scalar(
-                        tag=k, scalar_value=record, global_step=self.num_epoch)
+                # for k, record in zip(self.log_keys, to_write):
+                #     self.writer.add_scalar(
+                #         tag=k, scalar_value=record, global_step=self.num_epoch)
                 # Update in the log file
                 self.update_log_file(
                     good_format_stats(self.log_keys, to_write))

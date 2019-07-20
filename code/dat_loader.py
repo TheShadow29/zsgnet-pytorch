@@ -19,10 +19,10 @@ import spacy
 from extended_config import cfg as conf
 
 
-logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
-                    datefmt='%m/%d/%Y %H:%M:%S',
-                    level=logging.INFO)
-logger = logging.getLogger(__name__)
+# logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
+#                     datefmt='%m/%d/%Y %H:%M:%S',
+#                     level=logging.INFO)
+# logger = logging.getLogger(__name__)
 
 nlp = spacy.load('en_core_web_md')
 
@@ -76,7 +76,7 @@ class ImgQuDataset(Dataset):
         q_chosen = q_chosen.strip()
         qtmp = nlp(str(q_chosen))
         if len(qtmp) == 0:
-            logger.error('Empty string provided')
+            # logger.error('Empty string provided')
             raise NotImplementedError
         qlen = len(qtmp)
         q_chosen = q_chosen + ' PD'*(self.phrase_len - qlen)
@@ -167,8 +167,9 @@ def collater(batch):
     return out_dict
 
 
-def get_data(cfg, ds_name):
+def get_data(cfg):
     # trn_csv_file = Path('./data/flickr30k/csv_dir/train.csv')
+    ds_name = cfg.ds_to_use
     trn_csv_file = cfg.ds_info[ds_name]['trn_csv_file']
     trn_ds = ImgQuDataset(cfg=cfg, csv_file=trn_csv_file,
                           ds_name=ds_name, split_type='train')
