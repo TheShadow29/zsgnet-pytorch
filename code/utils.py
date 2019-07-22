@@ -20,6 +20,7 @@ import logging
 import pickle
 from torch.utils.tensorboard import SummaryWriter
 from torch import distributed as dist
+from torch.distributed import ReduceOp
 from yacs.config import CfgNode as CN
 
 
@@ -103,6 +104,48 @@ def synchronize():
     if world_size == 1:
         return
     dist.barrier()
+
+
+def reduce_dict(input_dict, average=False):
+    """
+    Args:
+    input_dict (dict): all the values will be reduced
+    average (bool): whether to do average or sum
+    Reduce the values in the dictionary from all processes so that process with rank
+    0 has the averaged results. Returns a dict with the same fields as
+    input_dict, after reduction.
+    """
+    world_size = get_world_size()
+    if world_size < 2:
+        return input_dict
+    with torch.no_grad():
+        names = []
+        values = []
+        # sort the keys so that they are consistent across processes
+        for k in sorted(input_dict.keys()):
+            names.append(k)
+            values.append(input_dict[k])
+        values = torch.stack(values, dim=0)
+        dist.reduce(values, dst=0)
+        # if dist.get_rank() == 0:
+        # only main process gets accumulated, so only divide by
+        # world_size in this case
+        # values /= world_size
+        if average:
+            values /= world_size
+        reduced_dict = {
+            k: v for k, v in zip(names, values)}
+    return reduced_dict
+
+
+def reduce_dict_corr(input_dict, nums):
+    new_inp_dict = {k: v*nums for k, v in input_dict.items()}
+    out_dict = reduce_dict(new_inp_dict)
+    dist.reduce(nums, dst=0)
+    if not is_main_process():
+        return out_dict
+    out_dict_avg = {k: v / nums.item() for k, v in out_dict.items()}
+    return out_dict_avg
 
 
 def exec_func_if_main_proc(func: Callable):
@@ -200,6 +243,9 @@ class Learner:
         # Makes the test file correspondence explicit
         if not isinstance(self.data.test_dl, list):
             self.data.test_dl = [self.data.test_dl]
+
+        # Get rank
+        self.rank = get_rank()
 
         self.init_log_dirs()
 
@@ -317,6 +363,16 @@ class Learner:
             ['trn', 'val']
         )
 
+        self.val_log_keys = ['epochs'] + _prepare_log_keys(
+            [self.loss_keys, self.met_keys],
+            ['val']
+        )
+
+        self.test_log_keys = ['epochs'] + _prepare_log_keys(
+            [self.met_keys],
+            ['test']
+        )
+
     @exec_func_if_main_proc
     def prepare_log_file(self):
         "Prepares the log files depending on arguments"
@@ -361,9 +417,9 @@ class Learner:
 
                 metric = self.eval_fn(out, batch)
                 for k in self.loss_keys:
-                    val_losses[k].append(out_loss[k].detach().cpu())
+                    val_losses[k].append(out_loss[k].detach())
                 for k in self.met_keys:
-                    eval_metrics[k].append(metric[k].detach().cpu())
+                    eval_metrics[k].append(metric[k].detach())
                 nums.append(batch[next(iter(batch))].shape[0])
                 prediction_dict = {
                     'id': metric['idxs'].tolist(),
@@ -372,9 +428,13 @@ class Learner:
                 }
                 predicted_box_dict_list += self.get_predictions_list(
                     prediction_dict)
-            nums = torch.tensor(nums).float()
+            nums = torch.tensor(nums).float().to(self.device)
+            tot_nums = nums.sum()
             val_loss = compute_avg_dict(val_losses, nums)
+            val_loss = reduce_dict_corr(val_loss, tot_nums)
+
             eval_metric = compute_avg_dict(eval_metrics, nums)
+            eval_metric = reduce_dict_corr(eval_metric, tot_nums)
             return val_loss, eval_metric, predicted_box_dict_list
 
     def train_epoch(self, mb) -> List[torch.tensor]:
@@ -399,6 +459,11 @@ class Learner:
             loss.backward()
             self.optimizer.step()
             metric = self.eval_fn(out, batch)
+
+            # Returns original dictionary if not distributed parallel
+            # loss_reduced = reduce_dict(out_loss, average=True)
+            # metric_reduced = reduce_dict(metric, average=True)
+
             trn_loss.add_value(out_loss)
             trn_acc.add_value(metric)
 
@@ -414,7 +479,10 @@ class Learner:
             # print(f'Done {batch_id}')
         del batch
         self.optimizer.zero_grad()
-        return trn_loss.smooth, trn_acc.smooth
+        out_loss = reduce_dict(trn_loss.smooth, average=True)
+        out_met = reduce_dict(trn_acc.smooth, average=True)
+        # return trn_loss.smooth, trn_acc.smooth
+        return out_loss, out_met
 
     def load_model_dict(self, resume_path: Optional[str] = None, load_opt: bool = False):
         "Load the model and/or optimizer"
@@ -471,18 +539,44 @@ class Learner:
         }
         torch.save(checkpoint, self.model_file.open('wb'))
 
-    @exec_func_if_main_proc
-    def update_prediction_file(self, predictions, pred_file):
-        pickle.dump(predictions, pred_file.open('wb'))
-
     # @exec_func_if_main_proc
+    def update_prediction_file(self, predictions, pred_file):
+        rank = self.rank
+        pred_file_to_use = pred_file.parent / f'{rank}_{pred_file.name}'
+        pickle.dump(predictions, pred_file_to_use.open('wb'))
+        if is_main_process() and self.cfg.do_dist:
+            if pred_file.exists():
+                pred_file.unlink()
+        # synchronize()
+        # st_time = time.time()
+        # self.rectify_predictions(pred_file)
+        # end_time = time.time()
+        # self.logger.info(
+        #     f'Updating prediction file took time {st_time - end_time}')
+
+    @exec_func_if_main_proc
+    def rectify_predictions(self, pred_file):
+        world_size = get_world_size()
+        pred_files_to_use = [pred_file.parent /
+                             f'{r}_{pred_file.name}' for r in range(world_size)]
+        assert all([p.exists() for p in pred_files_to_use])
+        out_preds = []
+        for pf in pred_files_to_use:
+            tmp = pickle.load(open(pf, 'rb'))
+            assert isinstance(tmp, list)
+            out_preds += tmp
+        pickle.dump(out_preds, pred_file.open('wb'))
+
     def prepare_to_write(
             self,
             train_loss: Dict[str, torch.tensor],
             train_acc: Dict[str, torch.tensor],
             val_loss: Dict[str, torch.tensor] = None,
-            val_acc: Dict[str, torch.tensor] = None
+            val_acc: Dict[str, torch.tensor] = None,
+            key_list: List[str] = None
     ) -> List[torch.tensor]:
+        if key_list is None:
+            key_list = self.log_keys
 
         epoch = self.num_epoch
         out_list = [epoch]
@@ -497,7 +591,7 @@ class Learner:
             if val_acc is not None:
                 out_list += [val_acc[k]]
 
-        assert len(out_list) == len(self.log_keys)
+        assert len(out_list) == len(key_list)
         return out_list
 
     @property
@@ -548,7 +642,7 @@ class Learner:
 
                 # Now only need main process
                 # Decide to save or not
-                met_to_use = valid_acc[self.met_keys[0]]
+                met_to_use = valid_acc[self.met_keys[0]].cpu()
                 if self.best_met < met_to_use:
                     self.best_met = met_to_use
                     self.save_model_dict()
@@ -588,6 +682,27 @@ class Learner:
             if met_to_use:
                 if self.best_met < met_to_use:
                     self.save_model_dict()
+
+    def testing(self, db: Dict[str, DataLoader]):
+        if isinstance(db, DataLoader):
+            db = {'dl0': db}
+        for dl_name, dl in tqdm(db.items(), total=len(db)):
+            out_loss, out_acc, preds = self.validate(dl)
+
+            log_keys = self.val_log_keys
+
+            to_write = self.prepare_to_write(
+                out_loss, out_acc, key_list=log_keys)
+            header = '  '.join(log_keys) + '\n'
+            self.update_log_file(header)
+            self.update_log_file(good_format_stats(
+                log_keys, to_write))
+
+            self.logger.info(header)
+            self.logger.info(good_format_stats(log_keys, to_write))
+
+            self.update_prediction_file(
+                preds, self.predictions_dir / f'{dl_name}_preds.pkl')
 
     def prepare_optimizer(self, params=None):
         "Prepare a normal optimizer"

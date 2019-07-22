@@ -122,7 +122,7 @@ class ImgQuDataset(Dataset):
         # Annot is in x1y1x2y2 format
         target = np.array(annot)
         # img = self.resize_fixed_transform(img)
-        img = img.resize((self.cfg.FIXED_W, self.cfg.FIXED_H))
+        img = img.resize((self.cfg.resize_img[0], self.cfg.resize_img[1]))
         # Now target is in y1x1y2x2 format which is required by the model
         # The above is because the anchor format is created
         # in row, column format
@@ -213,14 +213,22 @@ def make_data_sampler(dataset, shuffle, distributed):
 def get_dataloader(cfg, dataset: Dataset, is_train: bool) -> DataLoader:
     is_distributed = cfg.do_dist
     images_per_gpu = cfg.bs
+    if is_distributed:
+        # DistributedDataParallel
+        batch_size = images_per_gpu
+        num_workers = cfg.nw
+    else:
+        # DataParallel
+        batch_size = images_per_gpu * cfg.num_gpus
+        num_workers = cfg.nw * cfg.num_gpus
     if is_train:
         shuffle = True
     else:
         shuffle = False if not is_distributed else True
     sampler = make_data_sampler(dataset, shuffle, is_distributed)
-    return DataLoader(dataset, batch_size=images_per_gpu,
+    return DataLoader(dataset, batch_size=batch_size,
                       sampler=sampler, drop_last=is_train,
-                      num_workers=cfg.nw, collate_fn=collater)
+                      num_workers=num_workers, collate_fn=collater)
 
 
 def get_data(cfg):

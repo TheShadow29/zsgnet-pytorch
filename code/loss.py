@@ -5,6 +5,7 @@ from anchors import (create_anchors, simple_match_anchors,
                      bbox_to_reg_params, IoU_values)
 from typing import Dict
 from functools import partial
+# from utils import reduce_dict
 
 
 class ZSGLoss(nn.Module):
@@ -139,7 +140,9 @@ class ZSGLoss(nn.Module):
         out_dict['cls_ls'] = clas_loss
         out_dict['box_ls'] = box_loss
         # out_dict['rel_ls'] = rel_loss
+
         return out_dict
+        # return reduce_dict(out_dict)
 
 
 def get_default_loss(ratios, scales, cfg):

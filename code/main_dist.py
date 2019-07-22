@@ -38,8 +38,13 @@ def learner_init(uid: str, cfg: CN) -> Learner:
             mdl, device_ids=[cfg.local_rank],
             output_device=cfg.local_rank, broadcast_buffers=True,
             find_unused_parameters=True)
+    elif not cfg.do_dist and cfg.num_gpus:
+        # Use data parallel
+        mdl = torch.nn.DataParallel(mdl)
+
     loss_fn = get_default_loss(ratios, scales, cfg)
-    # loss_fn.to(device)
+    loss_fn.to(device)
+
     eval_fn = get_default_eval(ratios, scales, cfg)
     # eval_fn.to(device)
     opt_fn = partial(torch.optim.Adam, betas=(0.9, 0.99))
@@ -61,13 +66,18 @@ def main_dist(uid: str, **kwargs):
     cfg.num_gpus = num_gpus
 
     if num_gpus > 1:
-        assert 'local_rank' in kwargs
-        cfg.do_dist = True
-        torch.cuda.set_device(kwargs['local_rank'])
-        torch.distributed.init_process_group(
-            backend="nccl", init_method="env://"
-        )
-        synchronize()
+
+        if 'local_rank' in kwargs:
+            # We are doing distributed parallel
+            cfg.do_dist = True
+            torch.cuda.set_device(kwargs['local_rank'])
+            torch.distributed.init_process_group(
+                backend="nccl", init_method="env://"
+            )
+            synchronize()
+        else:
+            # We are doing data parallel
+            cfg.do_dist = False
 
     # Update the config file depending on the command line args
     cfg = update_from_dict(cfg, kwargs, key_maps)
@@ -77,7 +87,13 @@ def main_dist(uid: str, **kwargs):
     # print(cfg)
     # Initialize learner
     learn = learner_init(uid, cfg)
-    learn.fit(epochs=cfg.epochs, lr=cfg.lr)
+    # Train or Test
+    if not cfg.only_val or cfg.only_test:
+        learn.fit(epochs=cfg.epochs, lr=cfg.lr)
+    else:
+        if cfg.only_val:
+            # learn.validate()
+            learn.testing(learn.data.valid_dl)
 
 
 if __name__ == '__main__':

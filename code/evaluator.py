@@ -4,6 +4,7 @@ from anchors import (create_anchors, reg_params_to_bbox,
                      IoU_values, x1y1x2y2_to_y1x1y2x2)
 from typing import Dict
 from functools import partial
+# from utils import reduce_dict
 
 
 def reshape(box, new_size):
@@ -102,6 +103,7 @@ class Evaluator(nn.Module):
         #         >= self.acc_iou_threshold).float().mean()
         # assert actual_result.item() == iou1.item()
         return out_dict
+        # return reduce_dict(out_dict)
 
     def get_eval_result(self, actual_bbox, annot, ids_to_use, msk=None):
         best_boxes = torch.gather(
