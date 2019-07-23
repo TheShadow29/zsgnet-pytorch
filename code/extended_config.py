@@ -7,11 +7,10 @@ def_cfg = json.load(open('./configs/cfg.json'))
 cfg = CN(def_cfg)
 cfg.ds_info = CN(ds_info)
 
-# DATASET
-cfg.FIXED_W = 300
-cfg.FIXED_H = 300
 
-cfg.flickr30k = CN({'img_dir': './data/flickr30k/flickr30k_images'})
+# Device
+# setting default device
+cfg.device = 'cuda'
 
 # Training
 cfg.local_rank = 0
