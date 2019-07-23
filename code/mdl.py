@@ -104,7 +104,7 @@ class BackBone(nn.Module):
         return torch.cat((x, word_emb_tile, grid_tile), dim=1)
 
     def encode_feats(self, inp):
-        raise NotImplementedError
+        return self.encoder(inp)
 
     def forward(self, inp, we=None,
                 only_we=False, only_grid=False):
@@ -138,7 +138,7 @@ class BackBone(nn.Module):
 class RetinaBackBone(BackBone):
     def after_init(self):
         self.num_chs = self.num_channels()
-        self.fpn = FPN_backbone(self.num_chs, cfg, feat_size=self.out_chs)
+        self.fpn = FPN_backbone(self.num_chs, self.cfg, feat_size=self.out_chs)
 
     def num_channels(self):
         return [self.encoder.layer2[-1].conv3.out_channels,
@@ -176,7 +176,7 @@ class ZSGNet(nn.Module):
 
     def __init__(self, backbone, n_anchors=1, final_bias=0., cfg=None):
         super().__init__()
-        assert isinstance(backbone, BackBone)
+        # assert isinstance(backbone, BackBone)
         self.backbone = backbone
 
         # Assume the output from each
@@ -359,62 +359,40 @@ class ZSGNet(nn.Module):
 
         req_emb = self.apply_lstm(req_embs, qlens, max_qlen)
 
-        # TODO: use ssd via backbone to simplify code
-        if self.cfg['use_model'] == 'retina':
-            # image blind
-            if self.cfg['use_lang'] and not self.cfg['use_img']:
-                # feat_out = self.backbone(inp0)
-                feat_out = self.backbone(inp0, req_emb, only_we=True)
-                # feat_out = [f[:, 256:, :, :] for f in feat_out]
-            # language blind
-            elif self.cfg['use_img'] and not self.cfg['use_lang']:
-                feat_out = self.backbone(inp0)
-                # feat_out = self.backbone(inp0, req_emb, only_we=True)
-            elif not self.cfg['use_img'] and not self.cfg['use_lang']:
-                feat_out = self.backbone(inp0, req_emb, only_grid=True)
-            # see full language + image (happens by default)
-            else:
-                feat_out = self.backbone(inp0, req_emb)
+        # image blind
+        if self.cfg['use_lang'] and not self.cfg['use_img']:
+            # feat_out = self.backbone(inp0)
+            feat_out = self.backbone(inp0, req_emb, only_we=True)
 
-            if self.cfg['use_same_atb']:
-                att_bbx_out = torch.cat([self.permute_correctly(
-                    self.att_reg_box(feature), 5) for feature in feat_out], dim=1)
-                att_out = att_bbx_out[..., [-1]]
-                bbx_out = att_bbx_out[..., :-1]
-            else:
-                att_out = torch.cat(
-                    [self.permute_correctly(self.att_box(feature), 1)
-                     for feature in feat_out], dim=1)
-                bbx_out = torch.cat(
-                    [self.permute_correctly(self.reg_box(feature), 4)
-                     for feature in feat_out], dim=1)
+        # language blind
+        elif self.cfg['use_img'] and not self.cfg['use_lang']:
+            feat_out = self.backbone(inp0)
 
-        ########################################################
-        # For SSD300
-        elif self.cfg['use_model'] == 'ssd_vgg':
-            feats = self.backbone(inp0)
-            if not all([not torch.any(torch.isnan(f)) for f in feats]):
-                import pdb
-                pdb.set_trace()
-            feat_out = [self.concat_we(f, req_emb) for f in feats]
-            if self.cfg['use_same_atb']:
-                att_bbx_out = torch.cat([self.permute_correctly(
-                    self.att_reg_box(feature), 5) for feature in feat_out], dim=1)
+        elif not self.cfg['use_img'] and not self.cfg['use_lang']:
+            feat_out = self.backbone(inp0, req_emb, only_grid=True)
+        # see full language + image (happens by default)
+        else:
+            feat_out = self.backbone(inp0, req_emb)
 
-                att_out = att_bbx_out[..., [-1]]
-                bbx_out = att_bbx_out[..., :-1]
-            else:
-                att_out = torch.cat(
-                    [self.permute_correctly(self.att_box(feature), 1)
-                     for feature in feat_out], dim=1)
-                bbx_out = torch.cat(
-                    [self.permute_correctly(self.reg_box(feature), 4)
-                     for feature in feat_out], dim=1)
+        # Strategy depending on shared head or not
+        if self.cfg['use_same_atb']:
+            att_bbx_out = torch.cat([self.permute_correctly(
+                self.att_reg_box(feature), 5) for feature in feat_out], dim=1)
+            att_out = att_bbx_out[..., [-1]]
+            bbx_out = att_bbx_out[..., :-1]
+        else:
+            att_out = torch.cat(
+                [self.permute_correctly(self.att_box(feature), 1)
+                 for feature in feat_out], dim=1)
+            bbx_out = torch.cat(
+                [self.permute_correctly(self.reg_box(feature), 4)
+                 for feature in feat_out], dim=1)
 
-        feat_sizes = torch.Tensor([[f.size(2), f.size(3)]
+        feat_sizes = torch.tensor([[f.size(2), f.size(3)]
                                    for f in feat_out]).to(self.device)
 
-        num_f_out = torch.Tensor([len(feat_out)]).to(self.device)
+        # Used mainly due to dataparallel consistency
+        num_f_out = torch.tensor([len(feat_out)]).to(self.device)
 
         out_dict = {}
         out_dict['att_out'] = att_out
@@ -426,24 +404,38 @@ class ZSGNet(nn.Module):
 
 
 def get_default_net(num_anchors=1, cfg=None):
+    """
+    Constructs the network based on the config
+    """
     if cfg['use_model'] == 'retina':
         encoder = tvm.resnet50(True)
+        backbone = RetinaBackBone(encoder, cfg)
     elif cfg['use_model'] == 'ssd_vgg':
         encoder = ssd_vgg.build_ssd('train', cfg=cfg)
         encoder.vgg.load_state_dict(
             torch.load('./weights/vgg16_reducedfc.pth'))
         print('loaded pretrained vgg backbone')
+        backbone = SSDBackBone(encoder, cfg)
+        # backbone = encoder
 
-    backbone = BackBone(encoder, cfg)
-    qnet = ZSGNet(backbone, num_anchors, cfg=cfg)
-    return qnet
+    zsg_net = ZSGNet(backbone, num_anchors, cfg=cfg)
+    return zsg_net
 
 
 if __name__ == '__main__':
     # torch.manual_seed(0)
     cfg = conf
-    data = get_data(cfg, ds_name='refclef')
+    cfg.use_model = 'ssd_vgg'
+    cfg.ds_to_use = 'refclef'
+    cfg.num_gpus = 1
+    # cfg.device = 'cpu'
+    device = torch.device(cfg.device)
+    data = get_data(cfg)
 
-    zsg_net = get_default_net()
+    zsg_net = get_default_net(num_anchors=9, cfg=cfg)
+    zsg_net.to(device)
+
     batch = next(iter(data.train_dl))
+    for k in batch:
+        batch[k] = batch[k].to(device)
     out = zsg_net(batch)

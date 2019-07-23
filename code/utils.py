@@ -22,6 +22,7 @@ from torch.utils.tensorboard import SummaryWriter
 from torch import distributed as dist
 from torch.distributed import ReduceOp
 from yacs.config import CfgNode as CN
+# from maskrcnn_benchmark.utils.checkpoint import load_state_dict
 
 
 def update_from_dict(cfg: CN, dct: Dict[str, Any],
@@ -506,6 +507,10 @@ class Learner:
         if self.cfg['load_normally']:
             self.mdl.load_state_dict(
                 checkpoint['model_state_dict'], strict=self.cfg['strict_load'])
+        # else:
+        #     load_state_dict(
+        #         self.mdl, checkpoint['model_state_dict']
+        #     )
         # self.logger.info('Added model file correctly')
         if 'num_it' in checkpoint.keys():
             self.num_it = checkpoint['num_it']

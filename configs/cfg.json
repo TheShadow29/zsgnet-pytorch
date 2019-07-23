@@ -70,7 +70,7 @@
     "resume_path": "",
     "resume": true,
     "load_opt": false,
-    "strict_load": false,
+    "strict_load": true,
     "load_normally": true,
     "test_only": false,
     "valid_also": false,
