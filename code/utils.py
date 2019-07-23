@@ -7,6 +7,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 from dataclasses import dataclass
 from pathlib import Path
+import sys
 import re
 import numpy as np
 from collections import Counter
@@ -16,9 +17,96 @@ import shutil
 import json
 from fastprogress.fastprogress import master_bar, progress_bar
 import logging
-logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
-                    datefmt='%m/%d/%Y %H:%M:%S',
-                    level=logging.INFO)
+import pickle
+from torch.utils.tensorboard import SummaryWriter
+from torch import distributed as dist
+from torch.distributed import ReduceOp
+from yacs.config import CfgNode as CN
+# from maskrcnn_benchmark.utils.checkpoint import load_state_dict
+
+
+def get_world_size():
+    if not dist.is_available():
+        return 1
+    if not dist.is_initialized():
+        return 1
+    return dist.get_world_size()
+
+
+def get_rank():
+    if not dist.is_available():
+        return 0
+    if not dist.is_initialized():
+        return 0
+    return dist.get_rank()
+
+
+def is_main_process():
+    return get_rank() == 0
+
+
+def synchronize():
+    """
+    Helper function to synchronize (barrier) among all processes when
+    using distributed training
+    """
+    if not dist.is_available():
+        return
+    if not dist.is_initialized():
+        return
+    world_size = dist.get_world_size()
+    if world_size == 1:
+        return
+    dist.barrier()
+
+
+def reduce_dict(input_dict, average=False):
+    """
+    Args:
+    input_dict (dict): all the values will be reduced
+    average (bool): whether to do average or sum
+    Reduce the values in the dictionary from all processes so that process with rank
+    0 has the averaged results. Returns a dict with the same fields as
+    input_dict, after reduction.
+    """
+    world_size = get_world_size()
+    if world_size < 2:
+        return input_dict
+    with torch.no_grad():
+        names = []
+        values = []
+        # sort the keys so that they are consistent across processes
+        for k in sorted(input_dict.keys()):
+            names.append(k)
+            values.append(input_dict[k])
+        values = torch.stack(values, dim=0)
+        dist.reduce(values, dst=0)
+        # if dist.get_rank() == 0:
+        # only main process gets accumulated, so only divide by
+        # world_size in this case
+        # values /= world_size
+        if average:
+            values /= world_size
+        reduced_dict = {
+            k: v for k, v in zip(names, values)}
+    return reduced_dict
+
+
+def reduce_dict_corr(input_dict, nums):
+    new_inp_dict = {k: v*nums for k, v in input_dict.items()}
+    out_dict = reduce_dict(new_inp_dict)
+    dist.reduce(nums, dst=0)
+    if not is_main_process():
+        return out_dict
+    out_dict_avg = {k: v / nums.item() for k, v in out_dict.items()}
+    return out_dict_avg
+
+
+def exec_func_if_main_proc(func: Callable):
+    def wrapper(*args, **kwargs):
+        if is_main_process():
+            func(*args, **kwargs)
+    return wrapper
 
 
 @dataclass
@@ -101,101 +189,167 @@ class Learner:
     cfg: Dict
     eval_fn: nn.Module
     opt_fn: Callable
-    device: torch.device = torch.device('cuda:0')
+    device: torch.device = torch.device('cuda')
 
     def __post_init__(self):
         "Setup log file, load model if required"
-        self.logger = logging.getLogger(__name__)
+        # ToDo: shift this to DataWrap and make it Dict
+        # Makes the test file correspondence explicit
         if not isinstance(self.data.test_dl, list):
             self.data.test_dl = [self.data.test_dl]
 
-        self.loss_keys = self.loss_fn.loss_keys
-        self.met_keys = self.eval_fn.met_keys
-        self.log_keys = ['epochs']
+        # Get rank
+        self.rank = get_rank()
 
-        for k in self.loss_keys:
-            self.log_keys += [f'trn_{k}', f'val_{k}']
-        for k in self.met_keys:
-            self.log_keys += [f'trn_{k}', f'val_{k}']
+        self.init_log_dirs()
 
-        if self.cfg['test_at_runtime']:
-            acc_met_key = self.met_keys[0]
-            if isinstance(self.data.test_dl, list):
-                for i in range(len(self.data.test_dl)):
-                    self.log_keys += [f'test{i+1}_{acc_met_key}']
-            else:
-                self.log_keys += [f'test_{acc_met_key}']
-
-        self.log_file = Path(self.data.path) / 'logs' / f'{self.uid}.txt'
-        self.log_dir = self.log_file.parent / f'{self.uid}'
-
-        self.model_file = Path(self.data.path) / 'models' / f'{self.uid}.pth'
-        self.model_file.parent.mkdir(exist_ok=True, parents=True)
+        self.prepare_log_keys()
 
         self.prepare_log_file()
 
-        # Set the number of iterations to 0. Updated in loading if required
-        self.num_it = 0
+        self.logger = self.init_logger()
 
-        if self.cfg['resume']:
-            self.load_model_dict(
-                resume_path=self.cfg['resume_path'], load_opt=self.cfg['load_opt'])
+        # Set the number of iterations, epochs, best_met to 0.
+        # Updated in loading if required
+        self.num_it = 0
+        self.num_epoch = 0
         self.best_met = 0
 
+        # Resume if given a path
+        if self.cfg['resume']:
+            self.load_model_dict(
+                resume_path=self.cfg['resume_path'],
+                load_opt=self.cfg['load_opt'])
+
+        # self.writer.add_text(tag='cfg', text_string=json.dumps(self.cfg),
+            # global_step=self.num_epoch)
+
+    def init_logger(self):
+        logger = logging.getLogger(__name__)
+        logger.setLevel(logging.DEBUG)
+        if not is_main_process():
+            return logger
+        ch = logging.StreamHandler(stream=sys.stdout)
+        ch.setLevel(logging.INFO)
+        formatter = logging.Formatter(
+            "%(asctime)s %(name)s %(levelname)s: %(message)s")
+        ch.setFormatter(formatter)
+        logger.addHandler(ch)
+
+        fh = logging.FileHandler(str(self.extra_logger_file))
+        fh.setLevel(logging.DEBUG)
+        fh.setFormatter(formatter)
+        logger.addHandler(fh)
+        # logging.basicConfig(
+        #     filename=self.extra_logger_file,
+        #     filemode='a',
+        #     format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
+        #     datefmt='%m/%d/%Y %H:%M:%S',
+        #     level=logging.INFO
+        # )
+        return logger
+
+    def init_log_dirs(self):
+        """
+        Convenience function to create the following:
+        1. Log dir to store log file in txt format
+        2. Extra Log dir to store the logger output
+        3. Tb log dir to store tensorboard files
+        4. Model dir to save the model files
+        5. Predictions dir to store the predictions of the saved model
+        6. [Optional] Can add some 3rd party logger
+        """
+        # Saves the text logs
+        self.txt_log_file = Path(
+            self.data.path) / 'txt_logs' / f'{self.uid}.txt'
+
+        # Saves the output of self.logger
+        self.extra_logger_file = Path(
+            self.data.path) / 'ext_logs' / f'{self.uid}.txt'
+
+        # Saves SummaryWriter outputs
+        self.tb_log_dir = Path(self.data.path) / 'tb_logs' / f'{self.uid}'
+
+        # Saves the trained model
+        self.model_file = Path(self.data.path) / 'models' / f'{self.uid}.pth'
+
+        # Saves the output predictions
+        self.predictions_dir = Path(
+            self.data.path) / 'predictions' / f'{self.uid}'
+
+        self.create_log_dirs()
+
+    @exec_func_if_main_proc
+    def create_log_dirs(self):
+        """
+        Creates the directories initialized in init_log_dirs
+        """
+        self.txt_log_file.parent.mkdir(exist_ok=True, parents=True)
+        self.extra_logger_file.parent.mkdir(exist_ok=True)
+        self.tb_log_dir.mkdir(exist_ok=True, parents=True)
+        self.model_file.parent.mkdir(exist_ok=True)
+        self.predictions_dir.mkdir(exist_ok=True, parents=True)
+
+    def prepare_log_keys(self):
+        """
+        Creates the relevant keys to be logged.
+        Mainly used by the txt logger to output in a good format
+        """
+        def _prepare_log_keys(keys_list: List[List[str]],
+                              prefix: List[str]) -> List[str]:
+            """
+            Convenience function to create log keys
+            keys_list: List[loss_keys, met_keys]
+            prefix: List['trn', 'val']
+            """
+            log_keys = []
+            for keys in keys_list:
+                for key in keys:
+                    log_keys += [f'{p}_{key}' for p in prefix]
+            return log_keys
+
+        self.loss_keys = self.loss_fn.loss_keys
+        self.met_keys = self.eval_fn.met_keys
+
+        # When writing Training and Validation together
+        self.log_keys = ['epochs'] + _prepare_log_keys(
+            [self.loss_keys, self.met_keys],
+            ['trn', 'val']
+        )
+
+        self.val_log_keys = ['epochs'] + _prepare_log_keys(
+            [self.loss_keys, self.met_keys],
+            ['val']
+        )
+
+        self.test_log_keys = ['epochs'] + _prepare_log_keys(
+            [self.met_keys],
+            ['test']
+        )
+
+    @exec_func_if_main_proc
     def prepare_log_file(self):
         "Prepares the log files depending on arguments"
-        if self.log_file.exists():
-            if self.cfg['del_existing']:
-                self.logger.info(
-                    f'removing existing log with same name {self.log_dir.stem}')
-                shutil.rmtree(self.log_dir)
-                f = self.log_file.open('w')
-            else:
-                f = self.log_file.open('a')
-        else:
-            self.log_file.parent.mkdir(exist_ok=True, parents=True)
-            f = self.log_file.open('w')
-
+        f = self.txt_log_file.open('a')
         cfgtxt = json.dumps(self.cfg)
         f.write(cfgtxt)
         f.write('\n\n')
         f.write('  '.join(self.log_keys) + '\n')
         f.close()
 
+    @exec_func_if_main_proc
     def update_log_file(self, towrite: str):
         "Updates the log files as and when required"
-        with self.log_file.open('a') as f:
+        with self.txt_log_file.open('a') as f:
             f.write(towrite + '\n')
 
-    def do_test(self, mb=None) -> List[torch.tensor]:
-        test_accs = []
-        for t in self.data.test_dl:
-            test_loss, test_acc = self.validate(mb=mb, db=t)
-            test_accs += [test_acc[self.met_keys[0]]]
-        return test_accs
-
-    def get_predictions(self, db=None):
-        if db is None:
-            db = self.data.test_dl
-        else:
-            if not isinstance(db, list):
-                db = [db]
-        out_dict = {}
-        with torch.no_grad():
-            for tidx, t in enumerate(db):
-                results_dict = {'Acc': [], 'MaxPos': []}
-                strt_idx = 0
-                for batch in tqdm(t):
-                    for k in batch:
-                        batch[k] = batch[k].to(self.device)
-                    out = self.mdl(batch)
-                    metric = self.eval_fn(out, batch)
-                    remember_info = self.eval_fn.remember_info
-                    for k in remember_info:
-                        results_dict[k] += remember_info[k].tolist()
-
-                out_dict[f'test_{tidx}'] = results_dict
-        return out_dict
+    def get_predictions_list(self, predictions: Dict[str, List]) -> List[Dict]:
+        "Converts dictionary of lists to list of dictionary"
+        keys = list(predictions.keys())
+        num_preds = len(predictions[keys[0]])
+        out_list = [{k: predictions[k][ind] for k in keys}
+                    for ind in range(num_preds)]
+        return out_list
 
     def validate(self, db: Optional[DataLoader] = None,
                  mb=None) -> List[torch.tensor]:
@@ -203,6 +357,8 @@ class Learner:
         self.mdl.eval()
         if db is None:
             db = self.data.valid_dl
+
+        predicted_box_dict_list = []
         with torch.no_grad():
             val_losses = {k: [] for k in self.loss_keys}
             eval_metrics = {k: [] for k in self.met_keys}
@@ -215,16 +371,25 @@ class Learner:
 
                 metric = self.eval_fn(out, batch)
                 for k in self.loss_keys:
-                    val_losses[k].append(out_loss[k].detach().cpu())
+                    val_losses[k].append(out_loss[k].detach())
                 for k in self.met_keys:
-                    eval_metrics[k].append(metric[k].detach().cpu())
+                    eval_metrics[k].append(metric[k].detach())
                 nums.append(batch[next(iter(batch))].shape[0])
-
-            del batch
-            nums = torch.tensor(nums).float()
+                prediction_dict = {
+                    'id': metric['idxs'].tolist(),
+                    'pred_boxes': metric['pred_boxes'].tolist(),
+                    'pred_scores': metric['pred_scores'].tolist()
+                }
+                predicted_box_dict_list += self.get_predictions_list(
+                    prediction_dict)
+            nums = torch.tensor(nums).float().to(self.device)
+            tot_nums = nums.sum()
             val_loss = compute_avg_dict(val_losses, nums)
+            val_loss = reduce_dict_corr(val_loss, tot_nums)
+
             eval_metric = compute_avg_dict(eval_metrics, nums)
-            return val_loss, eval_metric
+            eval_metric = reduce_dict_corr(eval_metric, tot_nums)
+            return val_loss, eval_metric, predicted_box_dict_list
 
     def train_epoch(self, mb) -> List[torch.tensor]:
         "One epoch used for training"
@@ -248,16 +413,30 @@ class Learner:
             loss.backward()
             self.optimizer.step()
             metric = self.eval_fn(out, batch)
+
+            # Returns original dictionary if not distributed parallel
+            # loss_reduced = reduce_dict(out_loss, average=True)
+            # metric_reduced = reduce_dict(metric, average=True)
+
             trn_loss.add_value(out_loss)
             trn_acc.add_value(metric)
-            mb.child.comment = (
-                f'LossB {loss: .4f} | SmLossB {trn_loss.smooth1: .4f} | AccB {trn_acc.smooth1: .4f}')
+
+            # self.writer.add_scalar(
+            #     tag='trn_loss', scalar_value=out_loss[self.loss_keys[0]],
+            #     global_step=self.num_it)
+            comment_to_print = f'LossB {loss: .4f} | SmLossB {trn_loss.smooth1: .4f} | AccB {trn_acc.smooth1: .4f}'
+            mb.child.comment = comment_to_print
+            if self.num_it % 2 == 0:
+                self.logger.debug(f'Num_it {self.num_it} {comment_to_print}')
             del out_loss
             del loss
             # print(f'Done {batch_id}')
         del batch
         self.optimizer.zero_grad()
-        return trn_loss.smooth, trn_acc.smooth
+        out_loss = reduce_dict(trn_loss.smooth, average=True)
+        out_met = reduce_dict(trn_acc.smooth, average=True)
+        # return trn_loss.smooth, trn_acc.smooth
+        return out_loss, out_met
 
     def load_model_dict(self, resume_path: Optional[str] = None, load_opt: bool = False):
         "Load the model and/or optimizer"
@@ -281,37 +460,96 @@ class Learner:
         if self.cfg['load_normally']:
             self.mdl.load_state_dict(
                 checkpoint['model_state_dict'], strict=self.cfg['strict_load'])
+        # else:
+        #     load_state_dict(
+        #         self.mdl, checkpoint['model_state_dict']
+        #     )
         # self.logger.info('Added model file correctly')
         if 'num_it' in checkpoint.keys():
             self.num_it = checkpoint['num_it']
 
-        if load_opt:
-            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        if 'num_epoch' in checkpoint.keys():
+            self.num_epoch = checkpoint['num_epoch']
 
+        if 'best_met' in checkpoint.keys():
+            self.best_met = checkpoint['best_met']
+
+        if load_opt:
+            self.optimizer = self.prepare_optimizer()
+            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            if 'scheduler_state_dict' in checkpoint:
+                self.lr_scheduler = self.prepare_scheduler()
+                self.lr_scheduler.load_state_dict(
+                    checkpoint['scheduler_state_dict'])
+
+    @exec_func_if_main_proc
     def save_model_dict(self):
         "Save the model and optimizer"
-        checkpoint = {'model_state_dict': self.mdl.state_dict(),
-                      'optimizer_state_dict': self.optimizer.state_dict(),
-                      'num_it': self.num_it}
+        # if is_main_process():
+        checkpoint = {
+            'model_state_dict': self.mdl.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'scheduler_state_dict': self.lr_scheduler.state_dict(),
+            'num_it': self.num_it,
+            'num_epoch': self.num_epoch,
+            'cfgtxt': json.dumps(self.cfg),
+            'best_met': self.best_met
+        }
         torch.save(checkpoint, self.model_file.open('wb'))
 
-    def prepare_to_write(self, epoch: int,
-                         train_loss: torch.tensor,
-                         val_loss: torch.tensor,
-                         train_acc: Dict[str, torch.tensor],
-                         val_acc: Dict[str, torch.tensor],
-                         test_accs: List = None) -> List[torch.tensor]:
+    # @exec_func_if_main_proc
+    def update_prediction_file(self, predictions, pred_file):
+        rank = self.rank
+        pred_file_to_use = pred_file.parent / f'{rank}_{pred_file.name}'
+        pickle.dump(predictions, pred_file_to_use.open('wb'))
+        if is_main_process() and self.cfg.do_dist:
+            if pred_file.exists():
+                pred_file.unlink()
+        # synchronize()
+        # st_time = time.time()
+        # self.rectify_predictions(pred_file)
+        # end_time = time.time()
+        # self.logger.info(
+        #     f'Updating prediction file took time {st_time - end_time}')
 
+    @exec_func_if_main_proc
+    def rectify_predictions(self, pred_file):
+        world_size = get_world_size()
+        pred_files_to_use = [pred_file.parent /
+                             f'{r}_{pred_file.name}' for r in range(world_size)]
+        assert all([p.exists() for p in pred_files_to_use])
+        out_preds = []
+        for pf in pred_files_to_use:
+            tmp = pickle.load(open(pf, 'rb'))
+            assert isinstance(tmp, list)
+            out_preds += tmp
+        pickle.dump(out_preds, pred_file.open('wb'))
+
+    def prepare_to_write(
+            self,
+            train_loss: Dict[str, torch.tensor],
+            train_acc: Dict[str, torch.tensor],
+            val_loss: Dict[str, torch.tensor] = None,
+            val_acc: Dict[str, torch.tensor] = None,
+            key_list: List[str] = None
+    ) -> List[torch.tensor]:
+        if key_list is None:
+            key_list = self.log_keys
+
+        epoch = self.num_epoch
         out_list = [epoch]
-        # , train_loss, val_loss]
+
         for k in self.loss_keys:
-            out_list += [train_loss[k], val_loss[k]]
+            out_list += [train_loss[k]]
+            if val_loss is not None:
+                out_list += [val_loss[k]]
+
         for k in self.met_keys:
-            out_list += [train_acc[k], val_acc[k]]
-        if test_accs is not None:
-            for t in test_accs:
-                out_list += [t]
-        assert len(out_list) == len(self.log_keys)
+            out_list += [train_acc[k]]
+            if val_acc is not None:
+                out_list += [val_acc[k]]
+
+        assert len(out_list) == len(key_list)
         return out_list
 
     @property
@@ -322,55 +560,107 @@ class Learner:
     def epoch(self):
         return self.cfg['epochs']
 
-    def fit(self, epochs: int, lr: float, params_opt_dict: Optional[Dict] = None):
+    @exec_func_if_main_proc
+    def master_bar_write(self, mb, **kwargs):
+        mb.write(**kwargs)
+
+    def fit(self, epochs: int, lr: float,
+            params_opt_dict: Optional[Dict] = None):
         "Main training loop"
+        # Print logger at the start of the training loop
         self.logger.info(self.cfg)
+        # Initialize the progress_bar
         mb = master_bar(range(epochs))
+        # Initialize optimizer
+        # Prepare Optimizer may need to be re-written as per use
         self.optimizer = self.prepare_optimizer(params_opt_dict)
+        # Initialize scheduler
+        # Prepare scheduler may need to re-written as per use
         self.lr_scheduler = self.prepare_scheduler(self.optimizer)
-        # Loop over epochs
-        mb.write(self.log_keys, table=True)
+
+        # Write the top row display
+        # mb.write(self.log_keys, table=True)
+        self.master_bar_write(mb, line=self.log_keys, table=True)
         exception = False
         met_to_use = None
+        # Keep record of time until exit
         st_time = time.time()
         try:
+            # Loop over epochs
             for epoch in mb:
+                self.num_epoch += 1
                 train_loss, train_acc = self.train_epoch(mb)
-                valid_loss, valid_acc = self.validate(self.data.valid_dl, mb)
 
-                valid_loss_to_use = valid_loss[self.loss_keys[0]]
+                valid_loss, valid_acc, predictions = self.validate(
+                    self.data.valid_dl, mb)
+
                 valid_acc_to_use = valid_acc[self.met_keys[0]]
-                test_accs = None
-                if self.cfg['test_at_runtime']:
-                    test_accs = self.do_test(mb)
-                if 'sfn' in self.cfg and self.cfg['sfn'] == 'ReduceLROnPlateau':
-                    # self.lr_scheduler.step(valid_loss_to_use)
-                    self.lr_scheduler.step(valid_acc_to_use)
-                else:
-                    self.lr_scheduler.step()
+                # Depending on type
+                self.scheduler_step(valid_acc_to_use)
 
-                to_write = self.prepare_to_write(
-                    epoch, train_loss, valid_loss,
-                    train_acc, valid_acc, test_accs)
-                mb.write([str(stat) if isinstance(stat, int)
-                          else f'{stat:.4f}' for stat in to_write], table=True)
-                self.update_log_file(
-                    good_format_stats(self.log_keys, to_write))
-                met_to_use = valid_acc[self.met_keys[0]]
+                # Now only need main process
+                # Decide to save or not
+                met_to_use = valid_acc[self.met_keys[0]].cpu()
                 if self.best_met < met_to_use:
                     self.best_met = met_to_use
                     self.save_model_dict()
+                    self.update_prediction_file(
+                        predictions,
+                        self.predictions_dir / f'val_preds_{self.uid}.pkl')
+
+                # Prepare what all to write
+                to_write = self.prepare_to_write(
+                    train_loss, train_acc,
+                    valid_loss, valid_acc
+                )
+
+                # Display on terminal
+                assert to_write is not None
+                mb_write = [str(stat) if isinstance(stat, int)
+                            else f'{stat:.4f}' for stat in to_write]
+                self.master_bar_write(mb, line=mb_write, table=True)
+
+                # for k, record in zip(self.log_keys, to_write):
+                #     self.writer.add_scalar(
+                #         tag=k, scalar_value=record, global_step=self.num_epoch)
+                # Update in the log file
+                self.update_log_file(
+                    good_format_stats(self.log_keys, to_write))
+
         except Exception as e:
             exception = e
             raise e
         finally:
             end_time = time.time()
             self.update_log_file(
-                f'epochs done {epoch}. Exited due to exception {exception}. Total time taken {end_time - st_time: 0.4f}')
-
+                f'epochs done {epoch}. Exited due to exception {exception}. '
+                f'Total time taken {end_time - st_time: 0.4f}\n\n'
+            )
+            # Decide to save finally or not
             if met_to_use:
                 if self.best_met < met_to_use:
                     self.save_model_dict()
+
+    def testing(self, db: Dict[str, DataLoader]):
+        if isinstance(db, DataLoader):
+            db = {'dl0': db}
+        for dl_name, dl in tqdm(db.items(), total=len(db)):
+            out_loss, out_acc, preds = self.validate(dl)
+
+            log_keys = self.val_log_keys
+
+            to_write = self.prepare_to_write(
+                out_loss, out_acc, key_list=log_keys)
+            header = '  '.join(log_keys) + '\n'
+            self.update_log_file(header)
+            self.update_log_file(good_format_stats(
+                log_keys, to_write))
+
+            self.logger.info(header)
+            self.logger.info(good_format_stats(log_keys, to_write))
+
+            self.update_prediction_file(
+                preds, self.predictions_dir / f'{dl_name}_preds.pkl')
 
     def prepare_optimizer(self, params=None):
         "Prepare a normal optimizer"
@@ -381,23 +671,23 @@ class Learner:
 
     def prepare_scheduler(self, opt: torch.optim):
         "Prepares a LR scheduler on top of optimizer"
+        self.sched_using_val_metric = False
         if 'sfn' in self.cfg:
-            sfn = self.cfg['sfn']
+            self.sched_using_val_metric = self.cfg['sfn'] == 'ReduceLROnPlateau'
             lr_sched = getattr(torch.optim.lr_scheduler,
                                self.cfg['sfn'])
         else:
             lr_sched = torch.optim.lr_scheduler.LambdaLR(
                 opt, lambda epoch: 1)
-            # lr_sched = torch.optim.lr_scheduler.StepLR(
-            # opt, step_size=10, gamma=0.1)
-            # lr_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
-            # opt, )
-
-            # self.cfg['sfn'] = 'ReduceLROnPlateau'
-            # lr_sched = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            #     opt, patience=2, mode='max', factor=0.5, verbose=True)
 
         return lr_sched
+
+    def scheduler_step(self, val_metric):
+        if self.sched_using_val_metric:
+            self.lr_scheduler.step(val_metric)
+        else:
+            self.lr_scheduler.step()
+        return
 
     def overfit_batch(self, epochs: int, lr: float):
         "Sanity check to see if model overfits on a batch"

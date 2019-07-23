@@ -1,4 +1,5 @@
 from torch.utils.data import Dataset, DataLoader
+from torch.utils.data.distributed import DistributedSampler
 from torchvision.transforms import functional as F
 import pandas as pd
 from utils import DataWrap
@@ -19,11 +20,6 @@ import spacy
 from extended_config import cfg as conf
 
 
-logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
-                    datefmt='%m/%d/%Y %H:%M:%S',
-                    level=logging.INFO)
-logger = logging.getLogger(__name__)
-
 nlp = spacy.load('en_core_web_md')
 
 
@@ -37,37 +33,36 @@ def pil2tensor(image, dtype: np.dtype):
     return torch.from_numpy(a.astype(dtype, copy=False))
 
 
-# class ResizeFixed:
-#     """
-#     Fixed size image
-#     """
+class NewDistributedSampler(DistributedSampler):
+    """
+    Same as default distributed sampler of pytorch
+    Just has another argument for shuffle
+    Allows distributed in validation/testing as well
+    """
 
-#     def __init__(self, out_width: int, out_height: int):
-#         self.w = out_width
-#         self.h = out_height
+    def __init__(self, dataset, num_replicas=None, rank=None, shuffle=True):
+        super().__init__(dataset, num_replicas=num_replicas, rank=rank)
+        self.shuffle = shuffle
 
-#     def get_size(self, image_size: Tuple[int, int]) -> Tuple[int, int]:
-#         return self.w, self.h
+    def __iter__(self):
+        if self.shuffle:
+            # deterministically shuffle based on epoch
+            g = torch.Generator()
+            g.manual_seed(self.epoch)
+            indices = torch.randperm(len(self.dataset), generator=g).tolist()
+        else:
+            indices = torch.arange(len(self.dataset)).tolist()
 
-#     def __call__(self, image):
-#         # : PIL.Image.Image,
-#         # target: np.array):
-#         # -> Tuple[Image.Image, np.array]:
-#         """
-#         target assumed in xyxy format
-#         """
-#         size = self.get_size(image.size)
-#         # image = F.resize(image, size)
-#         image = image.resize(self.w, self.h)
-#         # target = np.array([target[0]/self.w, target[1]/self.h,
-#         #                    target[2]/self.w, target[3]/self.h])
-#         # target = np.array([
-#         #     target[0] * self.w / size[0],
-#         #     target[1] * self.h / size[1],
-#         #     target[2] * self.w / size[0],
-#         #     target[3] * self.h / size[1]
-#         # ])
-#         return image
+        # add extra samples to make it evenly divisible
+        indices += indices[: (self.total_size - len(indices))]
+        assert len(indices) == self.total_size
+
+        # subsample
+        offset = self.num_samples * self.rank
+        indices = indices[offset: offset + self.num_samples]
+        assert len(indices) == self.num_samples
+
+        return iter(indices)
 
 
 class ImgQuDataset(Dataset):
@@ -87,20 +82,12 @@ class ImgQuDataset(Dataset):
 
         # self.image_data = pd.read_csv(csv_file)
         self.image_data = self._read_annotations(csv_file)
-
+        # self.image_data = self.image_data.iloc[:200]
         self.img_dir = Path(self.cfg.ds_info[self.ds_name]['img_dir'])
         self.phrase_len = 50
         self.item_getter = getattr(self, 'simple_item_getter')
         # normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
         # std=[0.229, 0.224, 0.225])
-
-        # self.resize_fixed_transform = ResizeFixed(
-        #     self.cfg.FIXED_W, self.cfg.FIXED_H)
-        # self.img_transforms = transforms.Compose([
-        # resize_fixed_transform,
-        # transforms.ToTensor(),
-        # normalize,
-        # ])
 
     def __len__(self):
         return len(self.image_data)
@@ -117,7 +104,7 @@ class ImgQuDataset(Dataset):
         q_chosen = q_chosen.strip()
         qtmp = nlp(str(q_chosen))
         if len(qtmp) == 0:
-            logger.error('Empty string provided')
+            # logger.error('Empty string provided')
             raise NotImplementedError
         qlen = len(qtmp)
         q_chosen = q_chosen + ' PD'*(self.phrase_len - qlen)
@@ -130,7 +117,7 @@ class ImgQuDataset(Dataset):
         # Annot is in x1y1x2y2 format
         target = np.array(annot)
         # img = self.resize_fixed_transform(img)
-        img = img.resize((self.cfg.FIXED_W, self.cfg.FIXED_H))
+        img = img.resize((self.cfg.resize_img[0], self.cfg.resize_img[1]))
         # Now target is in y1x1y2x2 format which is required by the model
         # The above is because the anchor format is created
         # in row, column format
@@ -148,10 +135,11 @@ class ImgQuDataset(Dataset):
         img = pil2tensor(img, np.float_).float().div_(255)
         out = {
             'img': img,
-            'idxs': torch.tensor(idx),
+            'idxs': torch.tensor(idx).long(),
             'qvec': torch.from_numpy(q_chosen_emb_vecs),
             'qlens': torch.tensor(qlen),
             'annot': torch.from_numpy(target).float(),
+            'orig_annot': torch.tensor(annot).float(),
             'img_size': torch.tensor([h, w])
         }
 
@@ -207,114 +195,57 @@ def collater(batch):
     return out_dict
 
 
-def get_data(cfg, ds_name):
-    # trn_csv_file = Path('./data/flickr30k/csv_dir/train.csv')
+def make_data_sampler(dataset, shuffle, distributed):
+    if distributed:
+        return NewDistributedSampler(dataset, shuffle=shuffle)
+    if shuffle:
+        sampler = torch.utils.data.sampler.RandomSampler(dataset)
+    else:
+        sampler = torch.utils.data.sampler.SequentialSampler(dataset)
+    return sampler
+
+
+def get_dataloader(cfg, dataset: Dataset, is_train: bool) -> DataLoader:
+    is_distributed = cfg.do_dist
+    images_per_gpu = cfg.bs
+    if is_distributed:
+        # DistributedDataParallel
+        batch_size = images_per_gpu
+        num_workers = cfg.nw
+    else:
+        # DataParallel
+        batch_size = images_per_gpu * cfg.num_gpus
+        num_workers = cfg.nw * cfg.num_gpus
+    if is_train:
+        shuffle = True
+    else:
+        shuffle = False if not is_distributed else True
+    sampler = make_data_sampler(dataset, shuffle, is_distributed)
+    return DataLoader(dataset, batch_size=batch_size,
+                      sampler=sampler, drop_last=is_train,
+                      num_workers=num_workers, collate_fn=collater)
+
+
+def get_data(cfg):
+    # Get which dataset to use
+    ds_name = cfg.ds_to_use
+
+    # Training file
     trn_csv_file = cfg.ds_info[ds_name]['trn_csv_file']
     trn_ds = ImgQuDataset(cfg=cfg, csv_file=trn_csv_file,
                           ds_name=ds_name, split_type='train')
+    trn_dl = get_dataloader(cfg, trn_ds, is_train=True)
 
-    trn_dl = DataLoader(trn_ds,
-                        batch_size=cfg.bs,
-                        # batch_size=5,
-                        num_workers=cfg.nw,
-                        shuffle=True, collate_fn=collater)
-
-    # val_csv_file = Path('./data/flickr30k/csv_dir/val.csv')
+    # Validation file
     val_csv_file = cfg.ds_info[ds_name]['val_csv_file']
     val_ds = ImgQuDataset(cfg=cfg, csv_file=val_csv_file,
                           ds_name=ds_name, split_type='valid')
-    val_dl = DataLoader(val_ds,
-                        batch_size=cfg.bsv,
-                        # batch_size=5,
-                        num_workers=cfg.nwv,
-                        shuffle=False, collate_fn=collater)
-    data = DataWrap(path='./tmp', train_dl=trn_dl, valid_dl=val_dl)
+    val_dl = get_dataloader(cfg, val_ds, is_train=False)
+
+    data = DataWrap(path=cfg.tmp_path, train_dl=trn_dl, valid_dl=val_dl)
     return data
-# def get_data(bs=30, nw=10, bsv=30, nwv=10, devices=0,
-#              do_tfms=False, cfg=None, data_cfg=None):
-#     ds_to_use = cfg['ds_to_use']
-#     data_dir = Path(data_cfg[ds_to_use]['data_dir'])
-#     img_dir = Path(data_cfg[ds_to_use]['img_dir'])
-#     tmp_path = cfg['tmp_path']
-#     csvs_tdir = data_dir / 'csvs'
-#     if ds_to_use == 'vg_split':
-#         if not cfg['train_balanced_set']:
-#             trn_csv = csvs_tdir / 'train_unseen.csv'
-#         else:
-#             trn_csv = csvs_tdir / 'train_balanced_unseen.csv'
-#             val_csv = csvs_tdir / 'val_balanced_unseen.csv'
-#         if not cfg['test_balanced_set']:
-#             test1_csv = csvs_tdir / 'tp1_unseen.csv'
-#             test2_csv = csvs_tdir / 'tp2_unseen.csv'
-#         else:
-#             test1_csv = csvs_tdir / 'tp1_balanced_unseen.csv'
-#             test2_csv = csvs_tdir / 'tp2_balanced_unseen.csv'
-
-#         print('Using custom unseen csv files. Training is {}, Testing is {}'.format(
-#             cfg['train_balanced_set'], cfg['test_balanced_set']))
-#     else:
-#         csv_suffix = cfg['csv_suffix']
-#         print(f'Using {csv_suffix} files')
-#         trn_csv = csvs_tdir / f'train_{csv_suffix}.csv'
-#         val_csv = csvs_tdir / f'val_{csv_suffix}.csv'
-#         test_csv = csvs_tdir / f'test_{csv_suffix}.csv'
-
-#     if do_tfms:
-#         tfms = get_transforms(do_flip=cfg['do_flip'], max_rotate=1,
-#                               max_lighting=0.2, max_zoom=1,
-#                               max_warp=0)
-#         tfms = [tfms[0], None]
-#     else:
-#         tfms = [None, None]
-
-#     trn_ds = ImgQuDataset(trn_csv, tdir=data_dir, img_dir=img_dir,
-#                           transform=tfms[0], cfg=cfg)
-#     trn_dl = DataLoader(trn_ds, batch_size=bs, num_workers=nw, collate_fn=collater,
-#                         shuffle=True, drop_last=True)
-#     val_ds = ImgQuDataset(val_csv, tdir=data_dir, img_dir=img_dir,
-#                           transform=tfms[1], cfg=cfg)
-#     val_dl = DataLoader(val_ds, batch_size=bsv, collate_fn=collater,
-#                         num_workers=nwv, drop_last=False)
-#     if cfg['ds_to_use'] == 'vg_split':
-#         test1_ds = ImgQuDataset(test1_csv, tdir=data_dir, img_dir=img_dir,
-#                                 transform=tfms[1], cfg=cfg)
-#         test1_dl = DataLoader(test1_ds, batch_size=bsv, collate_fn=collater,
-#                               num_workers=nwv, drop_last=False)
-#         test2_ds = ImgQuDataset(test2_csv, tdir=data_dir, img_dir=img_dir,
-#                                 transform=tfms[1], cfg=cfg)
-#         test2_dl = DataLoader(test2_ds, batch_size=bsv, collate_fn=collater,
-#                               num_workers=nwv, drop_last=False)
-#         db = DataWrap(train_dl=trn_dl, valid_dl=val_dl,
-#                       test_dl=[test1_dl, test2_dl], path=tmp_path)
-
-#     else:
-#         test_ds = ImgQuDataset(test_csv, tdir=data_dir, img_dir=img_dir,
-#                                transform=tfms[1], cfg=cfg)
-#         test_dl = DataLoader(test_ds, batch_size=bsv, collate_fn=collater,
-#                              num_workers=nwv, drop_last=False)
-#         db = DataWrap(train_dl=trn_dl, valid_dl=val_dl,
-#                       test_dl=test_dl, path=tmp_path)
-
-#     # test_ds = ImgQuDataset(test_csv, tdir=data_dir, img_dir=img_dir,
-#     # transform=tfms[1], cfg=cfg)
-#     # test_dl = DataLoader(test_ds, batch_size=bsv, collate_fn=collater,
-#     # num_workers=nwv, drop_last=False)
-
-#     # db = DataBunch(trn_dl, val_dl, test_dl, path=tmp_path,
-#     # collate_fn=collater, device=devices)
 
 
-#     return db
 if __name__ == '__main__':
     cfg = conf
     data = get_data(cfg, ds_name='refclef')
-
-    # cfg = json.load(open('cfg.json', 'r'))
-    # data_cfg = json.load(open('ds_info.json', 'r'))
-    # cfg['ds_to_use'] = 'vg_split'
-    # db = get_data(
-    #     60, 14, 60, 14, cfg=cfg, data_cfg=data_cfg)
-    # for x in tqdm(db.train_dl):
-    #     pass
-    # for x in tqdm(db.valid_dl):
-    #     pass

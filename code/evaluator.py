@@ -1,10 +1,10 @@
 import torch
 from torch import nn
-from anchors import create_anchors, reg_params_to_bbox, IoU_values
+from anchors import (create_anchors, reg_params_to_bbox,
+                     IoU_values, x1y1x2y2_to_y1x1y2x2)
 from typing import Dict
 from functools import partial
-# from simple_utils import (
-# rcrc2tlbr, get_pil_images_from_batch, save_img_with_boxes_easy)
+# from utils import reduce_dict
 
 
 def reshape(box, new_size):
@@ -45,9 +45,6 @@ class Evaluator(nn.Module):
 
         self.acc_iou_threshold = self.cfg['acc_iou_threshold']
 
-    def after_init(self):
-        pass
-
     def forward(self, out: Dict[str, torch.tensor],
                 inp: Dict[str, torch.tensor]) -> Dict[str, torch.tensor]:
 
@@ -76,7 +73,8 @@ class Evaluator(nn.Module):
 
         att_box_sigmoid = torch.sigmoid(att_box).squeeze(-1)
         att_box_best, att_box_best_ids = att_box_sigmoid.max(1)
-        self.att_box_best = att_box_best
+        # self.att_box_best = att_box_best
+
         ious1 = IoU_values(annot, anchs)
         gt_mask, expected_best_ids = ious1.max(1)
 
@@ -86,24 +84,26 @@ class Evaluator(nn.Module):
         best_possible_result, _ = self.get_eval_result(
             actual_bbox, annot, expected_best_ids)
 
-        # max_pos_fin_results = self.fin_results
-        # msk = att_box_best < 0.5
         msk = None
         actual_result, pred_boxes = self.get_eval_result(
             actual_bbox, annot, att_box_best_ids, msk)
-        # acc_fin_results = self.fin_results
 
-        # self.remember_info = {'Acc': acc_fin_results,
-        # 'MaxPos': max_pos_fin_results}
-        # return self.actual_result
         out_dict = {}
         out_dict['Acc'] = actual_result
         out_dict['MaxPos'] = best_possible_result
-
-        out_dict['reshaped_boxes'] = reshape(
-            (pred_boxes + 1)/2, (inp['img_size']))
         out_dict['idxs'] = inp['idxs']
+
+        reshaped_boxes = x1y1x2y2_to_y1x1y2x2(reshape(
+            (pred_boxes + 1)/2, (inp['img_size'])))
+        out_dict['pred_boxes'] = reshaped_boxes
+        out_dict['pred_scores'] = att_box_best
+        # orig_annot = inp['orig_annot']
+        # Sanity check
+        # iou1 = (torch.diag(IoU_values(reshaped_boxes, orig_annot))
+        #         >= self.acc_iou_threshold).float().mean()
+        # assert actual_result.item() == iou1.item()
         return out_dict
+        # return reduce_dict(out_dict)
 
     def get_eval_result(self, actual_bbox, annot, ids_to_use, msk=None):
         best_boxes = torch.gather(
@@ -115,3 +115,7 @@ class Evaluator(nn.Module):
         ious = torch.diag(IoU_values(best_boxes, annot))
         # self.fin_results = ious
         return (ious >= self.acc_iou_threshold).float().mean(), best_boxes
+
+
+def get_default_eval(ratios, scales, cfg):
+    return Evaluator(ratios, scales, cfg)

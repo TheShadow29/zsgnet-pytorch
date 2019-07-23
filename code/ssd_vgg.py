@@ -97,6 +97,7 @@ class SSD(nn.Module):
         out_sources = [self.fproj1(sources[0]), self.fproj2(
             sources[1]), self.fproj3(sources[2])] + sources[3:]
         if self.cfg['resize_img'][0] >= 600:
+            # To Reduce the computation
             return out_sources[1:]
         return out_sources
 

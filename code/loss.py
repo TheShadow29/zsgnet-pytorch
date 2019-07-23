@@ -5,6 +5,7 @@ from anchors import (create_anchors, simple_match_anchors,
                      bbox_to_reg_params, IoU_values)
 from typing import Dict
 from functools import partial
+# from utils import reduce_dict
 
 
 class ZSGLoss(nn.Module):
@@ -23,6 +24,8 @@ class ZSGLoss(nn.Module):
 
         self.alpha = cfg['alpha']
         self.gamma = cfg['gamma']
+
+        # Which loss fucntion to use
         self.use_focal = cfg['use_focal']
         self.use_softmax = cfg['use_softmax']
         self.use_multi = cfg['use_multi']
@@ -119,9 +122,6 @@ class ZSGLoss(nn.Module):
             clas_loss = F.binary_cross_entropy_with_logits(
                 att_box, bbx_mask.float(), weight=weights, reduction='none')
 
-            # clas_loss = F.binary_cross_entropy(
-            #     att_box_sigm, bbx_mask.float(), weight=weights, reduction='none')
-
         clas_loss = clas_loss.sum() / bbx_mask.sum()
         # clas_loss = clas_loss.sum() / clas_loss.size(0)
 
@@ -139,7 +139,9 @@ class ZSGLoss(nn.Module):
         out_dict['cls_ls'] = clas_loss
         out_dict['box_ls'] = box_loss
         # out_dict['rel_ls'] = rel_loss
+
         return out_dict
+        # return reduce_dict(out_dict)
 
 
 def get_default_loss(ratios, scales, cfg):
