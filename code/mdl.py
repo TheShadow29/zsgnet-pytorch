@@ -8,7 +8,7 @@ import torch.nn as nn
 import torchvision.models as tvm
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from fpn_resnet import FPN_backbone
-from anchors import x1y1x2y2_to_y1x1y2x2, create_grid
+from anchors import create_grid
 import ssd_vgg
 from typing import Dict, Any
 from extended_config import cfg as conf
@@ -407,10 +407,10 @@ def get_default_net(num_anchors=1, cfg=None):
     """
     Constructs the network based on the config
     """
-    if cfg['use_model'] == 'retina':
+    if cfg['mdl_to_use'] == 'retina':
         encoder = tvm.resnet50(True)
         backbone = RetinaBackBone(encoder, cfg)
-    elif cfg['use_model'] == 'ssd_vgg':
+    elif cfg['mdl_to_use'] == 'ssd_vgg':
         encoder = ssd_vgg.build_ssd('train', cfg=cfg)
         encoder.vgg.load_state_dict(
             torch.load('./weights/vgg16_reducedfc.pth'))
@@ -425,7 +425,7 @@ def get_default_net(num_anchors=1, cfg=None):
 if __name__ == '__main__':
     # torch.manual_seed(0)
     cfg = conf
-    cfg.use_model = 'ssd_vgg'
+    cfg.mdl_to_use = 'ssd_vgg'
     cfg.ds_to_use = 'refclef'
     cfg.num_gpus = 1
     # cfg.device = 'cpu'

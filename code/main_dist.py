@@ -5,14 +5,14 @@ from dat_loader import get_data
 from mdl import get_default_net
 from loss import get_default_loss
 from evaluator import get_default_eval
-from utils import update_from_dict, Learner, synchronize
+from utils import Learner, synchronize
 
 import numpy as np
 import torch
 import fire
 from functools import partial
 
-from extended_config import (cfg as conf, key_maps, CN)
+from extended_config import (cfg as conf, key_maps, CN, update_from_dict)
 
 
 def learner_init(uid: str, cfg: CN) -> Learner:

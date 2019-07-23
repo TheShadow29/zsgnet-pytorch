@@ -20,11 +20,6 @@ import spacy
 from extended_config import cfg as conf
 
 
-# logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
-#                     datefmt='%m/%d/%Y %H:%M:%S',
-#                     level=logging.INFO)
-# logger = logging.getLogger(__name__)
-
 nlp = spacy.load('en_core_web_md')
 
 
@@ -247,7 +242,7 @@ def get_data(cfg):
                           ds_name=ds_name, split_type='valid')
     val_dl = get_dataloader(cfg, val_ds, is_train=False)
 
-    data = DataWrap(path='./tmp', train_dl=trn_dl, valid_dl=val_dl)
+    data = DataWrap(path=cfg.tmp_path, train_dl=trn_dl, valid_dl=val_dl)
     return data
 
 

@@ -24,6 +24,8 @@ class ZSGLoss(nn.Module):
 
         self.alpha = cfg['alpha']
         self.gamma = cfg['gamma']
+
+        # Which loss fucntion to use
         self.use_focal = cfg['use_focal']
         self.use_softmax = cfg['use_softmax']
         self.use_multi = cfg['use_multi']
@@ -119,9 +121,6 @@ class ZSGLoss(nn.Module):
 
             clas_loss = F.binary_cross_entropy_with_logits(
                 att_box, bbx_mask.float(), weight=weights, reduction='none')
-
-            # clas_loss = F.binary_cross_entropy(
-            #     att_box_sigm, bbx_mask.float(), weight=weights, reduction='none')
 
         clas_loss = clas_loss.sum() / bbx_mask.sum()
         # clas_loss = clas_loss.sum() / clas_loss.size(0)
