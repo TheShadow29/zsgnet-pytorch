@@ -88,12 +88,13 @@ def main_dist(uid: str, **kwargs):
     # Initialize learner
     learn = learner_init(uid, cfg)
     # Train or Test
-    if not cfg.only_val or cfg.only_test:
+    if not (cfg.only_val or cfg.only_test):
         learn.fit(epochs=cfg.epochs, lr=cfg.lr)
     else:
         if cfg.only_val:
-            # learn.validate()
             learn.testing(learn.data.valid_dl)
+        if cfg.only_test:
+            learn.testing(learn.data.test_dl)
 
 
 if __name__ == '__main__':

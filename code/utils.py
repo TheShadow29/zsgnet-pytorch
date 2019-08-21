@@ -22,7 +22,6 @@ from torch.utils.tensorboard import SummaryWriter
 from torch import distributed as dist
 from torch.distributed import ReduceOp
 from yacs.config import CfgNode as CN
-# from maskrcnn_benchmark.utils.checkpoint import load_state_dict
 
 
 def get_world_size():
@@ -93,6 +92,10 @@ def reduce_dict(input_dict, average=False):
 
 
 def reduce_dict_corr(input_dict, nums):
+    world_size = get_world_size()
+    if world_size < 2:
+        return input_dict
+
     new_inp_dict = {k: v*nums for k, v in input_dict.items()}
     out_dict = reduce_dict(new_inp_dict)
     dist.reduce(nums, dst=0)
@@ -114,7 +117,7 @@ class DataWrap:
     path: Union[str, Path]
     train_dl: DataLoader
     valid_dl: DataLoader
-    test_dl: Optional[Union[DataLoader, List]] = None
+    test_dl: Optional[Union[DataLoader, Dict]] = None
 
 
 class SmoothenValue():
@@ -193,10 +196,6 @@ class Learner:
 
     def __post_init__(self):
         "Setup log file, load model if required"
-        # ToDo: shift this to DataWrap and make it Dict
-        # Makes the test file correspondence explicit
-        if not isinstance(self.data.test_dl, list):
-            self.data.test_dl = [self.data.test_dl]
 
         # Get rank
         self.rank = get_rank()
@@ -500,11 +499,14 @@ class Learner:
     # @exec_func_if_main_proc
     def update_prediction_file(self, predictions, pred_file):
         rank = self.rank
-        pred_file_to_use = pred_file.parent / f'{rank}_{pred_file.name}'
-        pickle.dump(predictions, pred_file_to_use.open('wb'))
-        if is_main_process() and self.cfg.do_dist:
-            if pred_file.exists():
-                pred_file.unlink()
+        if self.cfg.do_dist:
+            pred_file_to_use = pred_file.parent / f'{rank}_{pred_file.name}'
+            pickle.dump(predictions, pred_file_to_use.open('wb'))
+            if is_main_process() and self.cfg.do_dist:
+                if pred_file.exists():
+                    pred_file.unlink()
+        else:
+            pickle.dump(predictions, pred_file.open('wb'))
         # synchronize()
         # st_time = time.time()
         # self.rectify_predictions(pred_file)
@@ -671,11 +673,10 @@ class Learner:
 
     def prepare_scheduler(self, opt: torch.optim):
         "Prepares a LR scheduler on top of optimizer"
-        self.sched_using_val_metric = False
-        if 'sfn' in self.cfg:
-            self.sched_using_val_metric = self.cfg['sfn'] == 'ReduceLROnPlateau'
-            lr_sched = getattr(torch.optim.lr_scheduler,
-                               self.cfg['sfn'])
+        self.sched_using_val_metric = self.cfg.use_reduce_lr_plateau
+        if self.sched_using_val_metric:
+            lr_sched = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                opt, factor=self.cfg.reduce_factor, patience=self.cfg.patience)
         else:
             lr_sched = torch.optim.lr_scheduler.LambdaLR(
                 opt, lambda epoch: 1)

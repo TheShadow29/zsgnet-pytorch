@@ -164,7 +164,8 @@ class ImgQuDataset(Dataset):
         trn_data = pd.read_csv(trn_file)
         trn_data['bbox'] = trn_data.bbox.apply(
             lambda x: ast.literal_eval(x))
-        if self.split_type == 'train':
+        sample = trn_data['query'].iloc[0]
+        if sample[0] == '[':
             trn_data['query'] = trn_data['query'].apply(
                 lambda x: ast.literal_eval(x))
 
@@ -242,7 +243,13 @@ def get_data(cfg):
                           ds_name=ds_name, split_type='valid')
     val_dl = get_dataloader(cfg, val_ds, is_train=False)
 
-    data = DataWrap(path=cfg.tmp_path, train_dl=trn_dl, valid_dl=val_dl)
+    test_csv_file = cfg.ds_info[ds_name]['test_csv_file']
+    test_ds = ImgQuDataset(cfg=cfg, csv_file=test_csv_file,
+                           ds_name=ds_name, split_type='valid')
+    test_dl = get_dataloader(cfg, test_ds, is_train=False)
+
+    data = DataWrap(path=cfg.tmp_path, train_dl=trn_dl, valid_dl=val_dl,
+                    test_dl={'test0': test_dl})
     return data
 
 
