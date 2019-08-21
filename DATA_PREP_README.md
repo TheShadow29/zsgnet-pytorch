@@ -1,13 +1,14 @@
 # Dataset Preparation
+
+Note that the following steps are required only if you want to prepare the annotations from parent repository. If you just want to run the model with the annotations see [DATA_README.md](./DATA_README.md)
+
 Here I have outlined the steps to prepare the following datasets:
 - Flickr30k Entities
 - ReferIt
 - Unseen splits
 
 We convert the annotations for each dataset into `.csv` file with the format:
-img_name,x1,y1,x2,y2,query(ies)
-
-For training files multiple queries are present in the same line, for validation, test we have only one query per line.
+img_id, bbox, queries
 
 The project directory is $ROOT
 
@@ -40,11 +41,10 @@ python data/prepare_flickr30k.py
 $FLICKR
 |-- all_ann_2.json
 |-- all_annot_new.json
-|-- csvs
-    |-- flickr_normal
-	|-- train.csv
-	|-- val.csv
-	|-- test.csv
+|-- csv_dir
+    |-- train.csv
+    |-- val.csv
+    |-- test.csv
 |-- flickr30k_entities
     |-- Annotations
     |-- Sentences
@@ -75,5 +75,21 @@ cd $ROOT
 ptyhon data/prepare_referit.py
 ```
 
+The final structure looks like 
+
+```
+$REF
+|-- images
+    |-- saiapr_tc12_images
+|-- refclef
+    |-- instances.json
+    |-- refs(berkeley).p
+    |-- refs(unc).p
+|-- csv_dir
+    |-- train.csv
+    |-- val.csv
+    |-- test.csv
+```
 
 ## Unseen Splits
+(Coming soon!)
