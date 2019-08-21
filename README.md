@@ -16,7 +16,7 @@ The code is fairly easy to use and extendable for future work. Feel free to open
 (Coming soon!)
 
 ## Data Preparation
-Look at DATA_README.MD for data-prepration.
+Look at [DATA_README.md](./DATA_README.md) for quick start and [DATA_PREP_README.md](./DATA_PREP_README.md) for obtaining annotations from the parent datasets.
 
 ## Training
 Basic usage is `python code/main_dist.py "experiment_name" --arg1=val1 --arg2=val2` and the arg1, arg2 can be found in `configs/cfg.yaml`. This trains using the DataParallel mode.
@@ -89,6 +89,7 @@ We thank:
 1. [@yhenon](https://github.com/yhenon) for their repository on retina-net (https://github.com/yhenon/pytorch-retinanet).
 1. [@amdegroot](https://github.com/amdegroot) for their repsository on ssd using vgg (https://github.com/amdegroot/ssd.pytorch)
 1. [fastai](https://github.com/fastai/fastai) repository for helpful logging, anchor box generation and convolution functions.
+1. [maskrcnn-benchmark](https://github.com/facebookresearch/maskrcnn-benchmark/) repository for many of the distributed utils and implementation of non-maxima suppression.
 
 # Citation
 
