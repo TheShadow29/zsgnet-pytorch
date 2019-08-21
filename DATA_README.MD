@@ -1,9 +1,8 @@
 # Dataset Preparation
-Here I outline the steps to prepare the following datasets:
+Here I have outlined the steps to prepare the following datasets:
 - Flickr30k Entities
 - ReferIt
-- Flickr30k new splits
-- Visual Genome splits
+- Unseen splits
 
 We convert the annotations for each dataset into `.csv` file with the format:
 img_name,x1,y1,x2,y2,query(ies)
@@ -12,7 +11,7 @@ For training files multiple queries are present in the same line, for validation
 
 The project directory is $ROOT
 
-### Flickr30k Entities
+## Flickr30k Entities
 Current directory is located at $FLICKR=/some_path/flickr30k
 1. To get the Flickr30k Images you need to fill a form whose instructions can be found here http://shannon.cs.illinois.edu/DenotationGraph/. Un-tar the file and save it under $FLICKR/flickr30k_images
 1. `git clone https://github.com/BryanPlummer/flickr30k_entities.git`. Unzip the annotations. At this point the directory should look like:
@@ -55,7 +54,7 @@ $FLICKR
 |-- flickr30k_images
 ```
 
-### ReferIt (Refclef)
+## ReferIt (Refclef)
 Current directory is located at $REF=/some_path/referit
 1. Follow the download links at https://github.com/lichengunc/refer to setup referit (refclef). Your folder structure after downloading the images (image subset of imageclef) and the annotations should look like this:
 ```
@@ -75,3 +74,6 @@ ln -s $REF referit
 cd $ROOT
 ptyhon data/prepare_referit.py
 ```
+
+
+## Unseen Splits
