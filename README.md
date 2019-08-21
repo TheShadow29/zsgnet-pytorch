@@ -89,3 +89,17 @@ We thank:
 1. [@yhenon](https://github.com/yhenon) for their repository on retina-net (https://github.com/yhenon/pytorch-retinanet).
 1. [@amdegroot](https://github.com/amdegroot) for their repsository on ssd using vgg (https://github.com/amdegroot/ssd.pytorch)
 1. [fastai](https://github.com/fastai/fastai) repository for helpful logging, anchor box generation and convolution functions.
+
+# Citation
+
+If you find the code or dataset useful, please cite us:
+
+```
+@inproceedings{sadhu2017zero,
+author = {Sadhu, Arka and Chen, Kan and Nevatia, Ram}, 
+title = {Zero-Shot Grounding of Objects from Natural Language Queries},
+booktitle = {The IEEE International Conference on Computer Vision (ICCV)},
+year = {2019} 
+}
+```
+
