@@ -32,7 +32,6 @@
     "patience": 2,
     "reduce_factor": 0.1,
     "lamb_reg": 1,
-    "lambda_rel": 0.1,
     "resume_path": "",
     "resume": true,
     "load_opt": false,

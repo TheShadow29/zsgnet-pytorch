@@ -17,6 +17,7 @@ from pathlib import Path
 
 
 def evaluate(pred_file, gt_file, **kwargs):
+    acc_iou_thresh = kwargs.get('acc_iou_thresh', 0.5)
     pred_file = Path(pred_file)
     if not pred_file.exists():
         assert 'num_gpus' in kwargs
@@ -49,7 +50,7 @@ def evaluate(pred_file, gt_file, **kwargs):
             pred_box = torch.tensor(p['pred_boxes'])
 
             iou = IoU_values(pred_box[None, :], gt_box[None, :])
-            if iou > 0.5:
+            if iou > acc_iou_thresh:
                 corr += 1
             tot += 1
     return corr/tot, corr, tot

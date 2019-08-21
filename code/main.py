@@ -105,28 +105,23 @@ def main(uid, del_existing=False, resume=True, **kwargs):
     cfg['del_existing'] = del_existing
     cfg.update(kwargs)
 
-    cfg.device_count = torch.cuda.device_count()
+    cfg.num_gpus = torch.cuda.device_count()
     # data_cfg = json.load(open('./ds_info.json'))
-    if cfg.do_dp:
-        cfg.bs = cfg.bs * cfg.device_count
-        cfg.nw = cfg.nw * cfg.device_count
+    # if cfg.do_dp:
+    cfg.bs = cfg.bs * cfg.num_gpus
+    cfg.nw = cfg.nw * cfg.num_gpus
 
-        cfg.bsv = cfg.bsv * cfg.device_count
-        cfg.nwv = cfg.nwv * cfg.device_count
+    cfg.bsv = cfg.bsv * cfg.num_gpus
+    cfg.nwv = cfg.nwv * cfg.num_gpus
 
     learn = learner_init(uid, cfg)
-    if not cfg['test_only']:
+    if not (cfg['only_val'] or cfg['only_test']):
         learn.fit(epochs=int(cfg['epochs']), lr=cfg['lr'])
-    elif cfg['get_predictions']:
-        ofile = './odict.json'
-        if 'ofile' in kwargs:
-            ofile = kwargs['ofile']
-        out_dict = learn.get_predictions()
-        json.dump(out_dict, open(ofile, 'w'))
     else:
         print(cfg)
-        if cfg['valid_also']:
-            val_loss, val_acc = learn.validate(db=learn.data.valid_dl)
+        if cfg['only_val']:
+            # learn.testing(learn.data.valid_dl)
+            val_loss, val_acc, preds = learn.validate(db=learn.data.valid_dl)
             for k in val_acc:
                 print(val_acc[k])
         # if isinstance(learn.data.test_dl, list):
