@@ -3,7 +3,7 @@ This is the official repository for ICCV19 oral paper [Zero-Shot Grounding of Ob
 
 The code has been refactored from the original implementation and now supports Distributed learning (see [pytorch docs](https://pytorch.org/docs/stable/nn.html#torch.nn.parallel.DistributedDataParallel)) for significantly faster training (around 4x speedup from pytorch [Dataparallel](https://pytorch.org/docs/stable/nn.html#dataparallel))
 
-The code should be fairly easy to use and extendable for further work. Feel free to open an issue in case of queries.
+The code is fairly easy to use and extendable for future work. Feel free to open an issue in case of queries.
 
 ## ToDo
 - [ ] Add colab demo.
@@ -54,9 +54,8 @@ or you can use a different experiment name as well and pass `--resume_path` argu
 python code/main_dist.py $exp_name --ds_to_use='refclef' --resume=True --resume_path='./tmp/models/referit_try.pth' 
 ```
 After this, the logs would be available inside `tmp/txt_logs/$exp_name.txt`
-Zero-Shot Grounding of Objects from Natural Language Queries
 
-1. If you have some other model, you can output the predictions in the following structure into a pickle file say `predictions.pkl`:
+2. If you have some other model, you can output the predictions in the following structure into a pickle file say `predictions.pkl`:
 ```
 [
     {'id': annotation_id,
@@ -77,5 +76,16 @@ python code/eval_script.py ./tmp/predictions/$exp_name/val_preds_$exp_name.pkl .
 ```
 
 ### Caveats in DistributedDataParallel
+When training using DDP, there is no easy way to get all the validation outputs into one process (that works only for tensors). As a result one has to save the predictions of each separate process and then read again to combine them in the main process. Current implementation doesn't do this for simplicity, as a result the validation results obtained during training are slight different from the actual results. 
+
+To get the correct results, one can follow the steps in [Evaluation](#evaluation) as is (the point to note is **NOT** use `torch.distributed.launch` for evaluation). Thus, you would get correct results when using simply dataparallel.
 
 
+## Pre-trained Models
+(Coming soon!)
+
+# Acknowledgements
+We thank:
+1. [@yhenon](https://github.com/yhenon) for their repository on retina-net (https://github.com/yhenon/pytorch-retinanet).
+1. [@amdegroot](https://github.com/amdegroot) for their repsository on ssd using vgg (https://github.com/amdegroot/ssd.pytorch)
+1. [fastai](https://github.com/fastai/fastai) repository for helpful logging, anchor box generation and convolution functions.
