@@ -13,16 +13,32 @@
 	"val_csv_file": "./data/referit/csv_dir/val.csv",
 	"test_csv_file": "./data/referit/csv_dir/test.csv"
     },
-    "vg_split": {
+    "flickr30k_c0": {
+	"data_dir": "./data/flickr30k",
+	"img_dir": "./data/flickr30k/flickr30k_images",
+	"trn_csv_file": "./data/flickr30k_c0/csv_dir/train.csv",
+	"val_csv_file": "./data/flickr30k_c0/csv_dir/val.csv",
+	"test_csv_file": "./data/flickr30k_c0/csv_dir/test.csv"
+    },
+    "flickr30k_c1": {
+	"data_dir": "./data/flickr30k",
+	"img_dir": "./data/flickr30k/flickr30k_images",
+	"trn_csv_file": "./data/flickr30k_c1/csv_dir/train.csv",
+	"val_csv_file": "./data/flickr30k_c1/csv_dir/val.csv",
+	"test_csv_file": "./data/flickr30k_c1/csv_dir/test.csv"
+    },
+    "vg_split_c2": {
 	"data_dir": "/scratch/arka/Ark_git_files/visual_genome/vg_split",
-	"img_dir": "/scratch/arka/Ark_git_files/visual_genome"
+	"img_dir": "/scratch/arka/Ark_git_files/visual_genome",
+	"trn_csv_file": "./data/vg_split_c2/csv_dir/train.csv",
+	"val_csv_file": "./data/vg_split_c2/csv_dir/val.csv",
+	"test_csv_file": "./data/vg_split_c2/csv_dir/test.csv"
     },
-    "refcoco": {
-	"data_dir": "/scratch/arka/Ark_git_files/referit/refcoco",
-	"img_dir": "/scratch/arka/Ark_git_files/coco/images/train2014/"
-    },
-    "refcoco+":{
-	"data_dir": "/scratch/arka/Ark_git_files/referit/refcoco+",
-	"img_dir": "/scratch/arka/Ark_git_files/coco/images/train2014/"
+    "vg_split_c3": {
+	"data_dir": "/scratch/arka/Ark_git_files/visual_genome/vg_split",
+	"img_dir": "/scratch/arka/Ark_git_files/visual_genome",
+	"trn_csv_file": "./data/vg_split_c3/csv_dir/train.csv",
+	"val_csv_file": "./data/vg_split_c3/csv_dir/val.csv",
+	"test_csv_file": "./data/vg_split_c3/csv_dir/test.csv"
     }
 }
