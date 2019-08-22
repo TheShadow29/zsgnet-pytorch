@@ -4,6 +4,12 @@ Note that the following steps uses annotations from the parent dataset converted
 
 The project directory is $ROOT
 
+## Setup the directories
+```
+cd $ROOT/data
+bash download_ann.sh
+```
+
 ## Image Download
 
 # Flickr30k Entities
