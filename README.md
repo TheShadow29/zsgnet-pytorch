@@ -5,16 +5,19 @@ The code has been refactored from the original implementation and now supports D
 
 The code is fairly easy to use and extendable for future work. Feel free to open an issue in case of queries.
 
-## ToDo
-- [ ] Add colab demo.
-- [ ] Add installation guide.
-- [ ] Pretrained models
-- [ ] Add hubconfig 
-- [ ] Add tensorboard
-
 ## Install
-(Coming soon!)
+Requirements:
+ - python>=3.6
+ - pytorch>=1.1
 
+To use the same environment you can use `conda` and the environment file `conda_env_zsg.yml` file provided. Please refer to [Miniconda](https://docs.conda.io/en/latest/miniconda.html) for details on installing `conda`.
+
+```
+MINICONDA_ROOT=[to your Miniconda/Anaconda root directory]
+conda env create -f conda_env_zsg.yml --prefix $MINICONDA_ROOT/envs/zsg_pyt
+conda activate zsg_pyt
+```
+ 
 ## Data Preparation
 Look at [DATA_README.md](./DATA_README.md) for quick start and [DATA_PREP_README.md](./DATA_PREP_README.md) for obtaining annotations from the parent datasets.
 
@@ -83,6 +86,13 @@ To get the correct results, one can follow the steps in [Evaluation](#evaluation
 
 ## Pre-trained Models
 (Coming soon!)
+
+## ToDo
+- [ ] Add colab demo.
+- [ ] Add installation guide.
+- [ ] Pretrained models
+- [ ] Add hubconfig 
+- [ ] Add tensorboard
 
 # Acknowledgements
 We thank:
