@@ -1,6 +1,8 @@
 *__pycache__/
 data/flickr30k
 data/referit
-data/visual_genome
+data/vg_split
+data/flickr30k_c0
+data/flickr30k_c1
 tmp/
 weights/
