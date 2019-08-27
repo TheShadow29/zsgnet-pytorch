@@ -10,6 +10,8 @@ cd $ROOT/data
 bash download_ann.sh
 ```
 
+If you run into error downloading the annotations please use this drive link: https://drive.google.com/open?id=1oZ5llnA4btD9LSmnSB0GaZtTogskLwCe
+
 ## Image Download
 
 # Flickr30k Entities
