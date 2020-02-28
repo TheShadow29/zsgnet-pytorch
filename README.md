@@ -106,11 +106,12 @@ We thank:
 If you find the code or dataset useful, please cite us:
 
 ```
-@inproceedings{sadhu2017zero,
-author = {Sadhu, Arka and Chen, Kan and Nevatia, Ram}, 
-title = {Zero-Shot Grounding of Objects from Natural Language Queries},
+@InProceedings{Sadhu_2019_ICCV,
+author = {Sadhu, Arka and Chen, Kan and Nevatia, Ram},
+title = {Zero-Shot Grounding of Objects From Natural Language Queries},
 booktitle = {The IEEE International Conference on Computer Vision (ICCV)},
-year = {2019} 
+month = {October},
+year = {2019}
 }
 ```
 
