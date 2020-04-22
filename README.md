@@ -85,12 +85,12 @@ To get the correct results, one can follow the steps in [Evaluation](#evaluation
 
 
 ## Pre-trained Models
-(Coming soon!)
+The pre-trained models are available in [Google Drive](https://drive.google.com/file/d/1tFGm87vdbQUEX4PNfmgs-UQzthMO849t/view?usp=sharing)
 
 ## ToDo
 - [ ] Add colab demo.
 - [ ] Add installation guide.
-- [ ] Pretrained models
+- [x] Pretrained models
 - [ ] Add hubconfig 
 - [ ] Add tensorboard
 
